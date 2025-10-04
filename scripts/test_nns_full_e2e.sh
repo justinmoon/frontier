@@ -167,27 +167,20 @@ echo "   Event ID: $EVENT_ID"
 echo "   Mapping: testsite → 127.0.0.1:18080"
 echo ""
 
-# Step 5: Update NNS client to use local relay
-echo "⚙️  Step 5: Configure Frontier to use local relay..."
+# Step 5: Create relay config for local testing
+echo "⚙️  Step 5: Creating relay config for local relay..."
+RELAY_CONFIG="/tmp/frontier_test_relays.yaml"
+cat > "$RELAY_CONFIG" << EOF
+relays:
+  - ws://localhost:$RELAY_PORT
+EOF
+echo -e "${GREEN}✅ Relay config created: $RELAY_CONFIG${NC}"
 echo ""
-echo -e "${YELLOW}MANUAL STEP REQUIRED:${NC}"
-echo "You need to temporarily update src/nns.rs:155-156 to use local relay:"
-echo ""
-echo -e "${BLUE}    client.add_relay(\"ws://localhost:$RELAY_PORT\").await?;${NC}"
-echo ""
-echo "Then rebuild: cargo build"
-echo ""
-
-read -p "Press ENTER when you've updated the code and rebuilt..."
 
 # Step 6: Run browser
+echo "🚀 Step 6: Launching Frontier browser..."
 echo ""
-echo "🚀 Step 6: Testing with Frontier browser..."
-echo ""
-echo -e "${YELLOW}MANUAL TEST STEPS:${NC}"
-echo "  1. Run: cargo run"
-echo "  2. In the URL bar, type: ${BLUE}testsite${NC}"
-echo "  3. Press Enter or click Go"
+echo -e "${BLUE}Starting browser with testsite...${NC}"
 echo ""
 echo "✅ EXPECTED RESULTS:"
 echo "  ✓ Green success page appears"
@@ -201,7 +194,12 @@ echo "  - HTTP logs: /tmp/http_server.log"
 echo "  - Browser terminal output for errors"
 echo ""
 
-read -p "Press ENTER when done testing (or Ctrl+C to abort)..."
+# Launch the browser with local relay config
+FRONTIER_RELAY_CONFIG="$RELAY_CONFIG" cargo run testsite
+
+echo ""
+echo "Browser closed."
+echo ""
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
