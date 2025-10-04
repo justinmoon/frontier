@@ -1,27 +1,34 @@
+mod chrome;
+mod claim_selector;
+mod input;
+mod navigation;
+mod net;
+mod nns;
 mod readme_application;
+mod storage;
 
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;
 #[cfg(feature = "cpu-base")]
 use anyrender_vello_cpu::VelloCpuWindowRenderer as WindowRenderer;
 
-use blitz_dom::net::Resource;
 use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
-use blitz_traits::net::Request;
 use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher as _};
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
+use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
+use crate::net::{NostrClient, RelayDirectory};
+use crate::nns::NnsResolver;
+use crate::storage::Storage;
 use blitz_shell::{
     create_default_event_loop, BlitzShellEvent, BlitzShellNetCallback, WindowConfig,
 };
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::oneshot;
-use url::Url;
+use tracing_subscriber::EnvFilter;
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowAttributes;
 
@@ -38,11 +45,20 @@ impl NavigationProvider for ReadmeNavigationProvider {
 }
 
 fn main() {
-    let raw_url = std::env::args()
+    let raw_input = std::env::args()
         .nth(1)
         .unwrap_or_else(|| String::from("https://example.com"));
 
-    // Turn on the runtime and enter it
+    let subscriber_result = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .try_init();
+    if subscriber_result.is_err() {
+        // tracing was already initialised; continue silently
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -50,75 +66,114 @@ fn main() {
 
     let _guard = rt.enter();
 
+    let storage = Arc::new(Storage::new().unwrap_or_else(|err| {
+        eprintln!("Failed to initialise persistent storage: {err}");
+        std::process::exit(1);
+    }));
+
+    let relay_config = std::env::var("FRONTIER_RELAY_CONFIG")
+        .ok()
+        .map(PathBuf::from);
+    let relay_directory = RelayDirectory::load(relay_config).unwrap_or_else(|err| {
+        eprintln!("Failed to load relay configuration: {err}. Using defaults.");
+        RelayDirectory::load(None).expect("default relays")
+    });
+    let resolver = Arc::new(NnsResolver::new(
+        Arc::clone(&storage),
+        relay_directory,
+        NostrClient::new(),
+    ));
+
     let event_loop = create_default_event_loop();
     let proxy = event_loop.create_proxy();
 
     let net_callback = BlitzShellNetCallback::shared(proxy.clone());
     let net_provider = Arc::new(Provider::new(net_callback));
 
-    let (base_url, contents, file_path) = rt.block_on(fetch(&raw_url, Arc::clone(&net_provider)));
+    let initial_plan = rt
+        .block_on(prepare_navigation(&raw_input, Arc::clone(&resolver)))
+        .unwrap_or_else(|err| {
+            eprintln!("Failed to prepare initial navigation target: {err}");
+            std::process::exit(1);
+        });
+
+    let (initial_document, initial_prompt) = match initial_plan {
+        NavigationPlan::Fetch(request) => {
+            let document = rt
+                .block_on(execute_fetch(&request, Arc::clone(&net_provider)))
+                .unwrap_or_else(|err| {
+                    eprintln!("Failed to load initial document: {err}");
+                    std::process::exit(1);
+                });
+            (document, None)
+        }
+        NavigationPlan::RequiresSelection(prompt) => {
+            let document = FetchedDocument {
+                base_url: "about:blank".into(),
+                contents: "<p>Waiting for NNS selection…</p>".into(),
+                file_path: None,
+                display_url: prompt.display_url.clone(),
+            };
+            (document, Some(prompt))
+        }
+    };
 
     let title = String::from("Frontier Browser");
-    let html = wrap_with_url_bar(&contents, &base_url);
 
-    let proxy = event_loop.create_proxy();
-    let navigation_provider = ReadmeNavigationProvider {
-        proxy: proxy.clone(),
-    };
-    let navigation_provider = Arc::new(navigation_provider);
+    let navigation_provider: Arc<dyn NavigationProvider> = Arc::new(ReadmeNavigationProvider {
+        proxy: event_loop.create_proxy(),
+    });
 
-    let doc = HtmlDocument::from_html(
+    let mut application = ReadmeApplication::new(
+        proxy.clone(),
+        raw_input.clone(),
+        Arc::clone(&net_provider),
+        Arc::clone(&navigation_provider),
+        Arc::clone(&resolver),
+    );
+
+    let html = application.prepare_initial_state(initial_document.clone(), initial_prompt.clone());
+
+    let mut doc = HtmlDocument::from_html(
         &html,
         DocumentConfig {
-            base_url: Some(base_url.clone()),
+            base_url: Some(initial_document.base_url.clone()),
             ua_stylesheets: None,
-            net_provider: Some(net_provider.clone()),
-            navigation_provider: Some(navigation_provider.clone()),
             ..Default::default()
         },
     );
+
+    doc.set_net_provider(net_provider.clone());
+    doc.set_navigation_provider(navigation_provider.clone());
     let renderer = WindowRenderer::new();
     let attrs = WindowAttributes::default().with_title(title);
     let window = WindowConfig::with_attributes(Box::new(doc) as _, renderer, attrs);
 
-    // Create application
-    let mut application = ReadmeApplication::new(
-        proxy.clone(),
-        raw_url.clone(),
-        net_provider,
-        navigation_provider,
-    );
     application.add_window(window);
 
-    if let Some(path) = file_path {
+    if let Some(path) = initial_document.file_path.clone() {
+        let watcher_proxy = proxy.clone();
         let mut watcher =
             notify::recommended_watcher(move |_: Result<NotifyEvent, NotifyError>| {
-                let event = BlitzShellEvent::Embedder(Arc::new(ReadmeEvent));
-                proxy.send_event(event).unwrap();
+                let event = ReadmeEvent::Refresh;
+                let _ = watcher_proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
             })
             .unwrap();
-
-        // Add a path to be watched. All files and directories at that path and
-        // below will be monitored for changes.
         watcher.watch(&path, RecursiveMode::NonRecursive).unwrap();
-
-        // Leak watcher to ensure it continues watching. Leaking is unproblematic here as we only create
-        // one and we want it to last the entire duration of the program
         Box::leak(Box::new(watcher));
     }
 
-    // Run event loop
-    event_loop.run_app(&mut application).unwrap()
+    event_loop.run_app(&mut application).unwrap();
 }
 
-pub fn wrap_with_url_bar(content: &str, current_url: &str) -> String {
+pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<&str>) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Frontier Browser - {current_url}</title>
+    <title>Frontier Browser - {display_url}</title>
     <style>
         * {{
             box-sizing: border-box;
@@ -192,6 +247,95 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str) -> String {
             background: #2c974b;
         }}
 
+        
+        #nns-overlay {{
+            position: fixed;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(560px, 92%);
+            background: #ffffff;
+            border: 1px solid #d0d7de;
+            border-radius: 12px;
+            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+            padding: 16px 18px;
+            z-index: 1200;
+        }}
+
+        #nns-overlay header {{
+            margin-bottom: 12px;
+        }}
+
+        #nns-overlay h2 {{
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+        }}
+
+        #nns-overlay p {{
+            margin: 4px 0 0;
+            font-size: 13px;
+            color: #57606a;
+        }}
+
+        #nns-overlay ul {{
+            list-style: none;
+            margin: 12px 0 0;
+            padding: 0;
+            max-height: 340px;
+            overflow-y: auto;
+        }}
+
+        .overlay-option {{
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            margin-bottom: 8px;
+            cursor: pointer;
+            background: #f9fafb;
+        }}
+
+        .overlay-option:last-child {{
+            margin-bottom: 0;
+        }}
+
+        .overlay-option:hover,
+        .overlay-option.selected {{
+            background: #f0f6ff;
+            border-color: #0969da;
+        }}
+
+        .overlay-line {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            font-size: 14px;
+        }}
+
+        .overlay-ip {{
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }}
+
+        .overlay-pubkey {{
+            color: #57606a;
+            font-size: 12px;
+            margin-left: 12px;
+        }}
+
+        .overlay-meta {{
+            font-size: 12px;
+            color: #57606a;
+            margin-top: 6px;
+        }}
+
+        .overlay-note {{
+            display: block;
+            margin-top: 8px;
+            font-size: 13px;
+            color: #1f2328;
+        }}
+
         #go-button:active {{
             background: #298e46;
         }}
@@ -212,7 +356,7 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str) -> String {
                 type="url"
                 id="url-input"
                 name="url"
-                value="{current_url}"
+                value="{display_url}"
                 autofocus
                 aria-label="Website URL address bar"
                 placeholder="Enter URL..."
@@ -229,68 +373,11 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str) -> String {
     <main id="content" role="main" aria-label="Page content">
         {content}
     </main>
+    {overlay}
 </body>
 </html>"#,
-        current_url = current_url,
-        content = content
+        display_url = display_url,
+        content = content,
+        overlay = overlay_html.unwrap_or("")
     )
-}
-
-async fn fetch(
-    raw_url: &str,
-    net_provider: Arc<Provider<Resource>>,
-) -> (String, String, Option<PathBuf>) {
-    if let Ok(url) = Url::parse(raw_url) {
-        match url.scheme() {
-            "file" => fetch_file_path(url.path()),
-            _ => fetch_url(url, net_provider).await,
-        }
-    } else if fs::exists(raw_url).unwrap() {
-        fetch_file_path(raw_url)
-    } else if let Ok(url) = Url::parse(&format!("https://{raw_url}")) {
-        fetch_url(url, net_provider).await
-    } else {
-        eprintln!("Cannot parse {raw_url} as url or find it as a file");
-        std::process::exit(1);
-    }
-}
-
-async fn fetch_url(
-    url: Url,
-    net_provider: Arc<Provider<Resource>>,
-) -> (String, String, Option<PathBuf>) {
-    let (tx, rx) = oneshot::channel();
-
-    let request = Request::get(url);
-    net_provider.fetch_with_callback(
-        request,
-        Box::new(move |result| {
-            let result = result.unwrap();
-            tx.send(result).unwrap();
-        }),
-    );
-
-    let (response_url, bytes) = rx.await.unwrap();
-
-    // Get the file content
-    let file_content = std::str::from_utf8(&bytes).unwrap().to_string();
-
-    (response_url, file_content, None)
-}
-
-fn fetch_file_path(raw_path: &str) -> (String, String, Option<PathBuf>) {
-    let path = std::path::absolute(Path::new(&raw_path)).unwrap();
-
-    if path.is_dir() {
-        eprintln!("Path is a directory, not a file: {}", path.display());
-        std::process::exit(1);
-    }
-
-    let base_url_path = path.parent().unwrap().to_string_lossy();
-    let base_url = format!("file://{base_url_path}/");
-
-    // Read file
-    let file_content = std::fs::read_to_string(&path).unwrap();
-
-    (base_url, file_content, Some(path))
 }
