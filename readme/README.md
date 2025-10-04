@@ -17,14 +17,14 @@ just run https://google.com
 ## Testing
 
 ```bash
+# All tests
+just test
+
 # Fast offline test (no network)
-just test-offline
+just test:offline
 
 # Online test (requires network)
-just test-online
-
-# All tests
-just test-all
+just test:online
 ```
 
 ## How It Works

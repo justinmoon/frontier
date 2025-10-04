@@ -2,17 +2,17 @@
 run *ARGS:
     cargo run -- {{ARGS}}
 
+# Run all tests
+test:
+    cargo test
+    cargo test --test online_test -- --ignored
+
 # Run offline tests (fast, no network required)
-test-offline:
+test\:offline:
     cargo test --test offline_test
 
 # Run online tests (requires network)
-test-online:
-    cargo test --test online_test -- --ignored
-
-# Run all tests
-test-all:
-    cargo test
+test\:online:
     cargo test --test online_test -- --ignored
 
 # Build the browser
