@@ -33,7 +33,6 @@ use readme_application::{ReadmeApplication, ReadmeEvent};
 use blitz_shell::{
     BlitzShellEvent, BlitzShellNetCallback, WindowConfig, create_default_event_loop,
 };
-use std::env::current_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,8 +55,7 @@ impl NavigationProvider for ReadmeNavigationProvider {
 
 fn main() {
     let raw_url = std::env::args().nth(1).unwrap_or_else(|| {
-        let cwd = current_dir().unwrap();
-        format!("{}", cwd.display())
+        String::from("https://example.com")
     });
 
     // Turn on the runtime and enter it
@@ -78,20 +76,8 @@ fn main() {
         rt.block_on(fetch(&raw_url, Arc::clone(&net_provider)));
 
     // Process markdown if necessary
-    let mut title = base_url.clone();
-    let mut html = contents;
-    let mut stylesheets = Vec::new();
-    if is_md {
-        html = markdown_to_html(html);
-        stylesheets.push(String::from(GITHUB_MD_STYLES));
-        stylesheets.push(String::from(BLITZ_MD_STYLES));
-        title = format!(
-            "README for {}",
-            base_url.rsplit("/").find(|s| !s.is_empty()).unwrap()
-        );
-    }
-
-    // println!("{html}");
+    let title = String::from("Blitz Browser");
+    let html = wrap_with_url_bar(&contents, &base_url, is_md);
 
     let proxy = event_loop.create_proxy();
     let navigation_provider = ReadmeNavigationProvider {
@@ -102,8 +88,8 @@ fn main() {
     let doc = HtmlDocument::from_html(
         &html,
         DocumentConfig {
-            base_url: Some(base_url),
-            ua_stylesheets: Some(stylesheets),
+            base_url: Some(base_url.clone()),
+            ua_stylesheets: None,
             net_provider: Some(net_provider.clone()),
             navigation_provider: Some(navigation_provider.clone()),
             ..Default::default()
@@ -141,6 +127,105 @@ fn main() {
 
     // Run event loop
     event_loop.run_app(&mut application).unwrap()
+}
+
+pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> String {
+    let mut body_content = content.to_string();
+    let mut styles = String::new();
+
+    if is_md {
+        body_content = markdown_to_html(body_content);
+        styles.push_str(GITHUB_MD_STYLES);
+        styles.push_str("\n");
+        styles.push_str(BLITZ_MD_STYLES);
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        {styles}
+
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        }}
+
+        #url-bar-container {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 50px;
+            background: #f6f8fa;
+            border-bottom: 1px solid #d0d7de;
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            gap: 8px;
+            z-index: 1000;
+        }}
+
+        #url-input {{
+            flex: 1;
+            height: 34px;
+            padding: 0 12px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+        }}
+
+        #url-input:focus {{
+            border-color: #0969da;
+            box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+        }}
+
+        #go-button {{
+            height: 34px;
+            padding: 0 16px;
+            background: #2da44e;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }}
+
+        #go-button:hover {{
+            background: #2c974b;
+        }}
+
+        #content {{
+            margin-top: 50px;
+            padding: 20px;
+        }}
+    </style>
+</head>
+<body>
+    <div id="url-bar-container">
+        <form id="url-form" style="display: flex; flex: 1; gap: 8px;">
+            <input type="text" id="url-input" name="url" value="{current_url}" autofocus />
+            <button type="submit" id="go-button">Go</button>
+        </form>
+    </div>
+    <div id="content">
+        {body_content}
+    </div>
+</body>
+</html>"#,
+        styles = styles,
+        current_url = current_url,
+        body_content = body_content
+    )
 }
 
 async fn fetch(

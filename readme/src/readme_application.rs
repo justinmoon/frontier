@@ -15,7 +15,6 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Theme, WindowId};
 
 use crate::fetch;
-use crate::markdown::{BLITZ_MD_STYLES, GITHUB_MD_STYLES, markdown_to_html};
 
 pub struct ReadmeEvent;
 
@@ -101,19 +100,14 @@ impl ReadmeApplication {
         url: String,
         is_md: bool,
     ) {
-        let mut html = contents;
-        let mut stylesheets = Vec::new();
-        if is_md {
-            html = markdown_to_html(html);
-            stylesheets.push(String::from(GITHUB_MD_STYLES));
-            stylesheets.push(String::from(BLITZ_MD_STYLES));
-        }
+        use crate::wrap_with_url_bar;
+        let html = wrap_with_url_bar(&contents, &url, is_md);
 
         let doc = HtmlDocument::from_html(
             &html,
             DocumentConfig {
                 base_url: Some(url),
-                ua_stylesheets: Some(stylesheets),
+                ua_stylesheets: None,
                 net_provider: Some(self.net_provider.clone()),
                 navigation_provider: Some(self.navigation_provider.clone()),
                 ..Default::default()

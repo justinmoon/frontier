@@ -1,9 +1,7 @@
 [package]
 name = "readme"
 version = "0.1.0"
-edition = "2024"
-license.workspace = true
-rust-version.workspace = true
+edition = "2021"
 
 [features]
 default = ["gpu", "comrak"]
@@ -20,20 +18,20 @@ log_phase_times = ["blitz-dom/log_phase_times"]
 incremental = ["blitz-dom/incremental"]
 
 [dependencies]
-blitz-traits = { workspace = true }
-blitz-dom = { workspace = true, features = ["default", "parallel-construct"] }
-blitz-html = { workspace = true }
-blitz-paint = { workspace = true, features = ["default"] }
-blitz-net = { workspace = true, features = ["cookies"] }
-blitz-shell = { workspace = true, features = ["tracing", "default"] }
-anyrender_vello = { workspace = true, optional = true }
-anyrender_vello_cpu = { workspace = true, features = ["multithreading"], optional = true }
+blitz-traits = { path = "/Users/justin/code/blitz/packages/blitz-traits" }
+blitz-dom = { path = "/Users/justin/code/blitz/packages/blitz-dom", features = ["default", "parallel-construct"] }
+blitz-html = { path = "/Users/justin/code/blitz/packages/blitz-html" }
+blitz-paint = { path = "/Users/justin/code/blitz/packages/blitz-paint", features = ["default"] }
+blitz-net = { path = "/Users/justin/code/blitz/packages/blitz-net", features = ["cookies"] }
+blitz-shell = { path = "/Users/justin/code/blitz/packages/blitz-shell", features = ["tracing", "default"] }
+anyrender_vello = { path = "/Users/justin/code/blitz/packages/anyrender_vello", optional = true }
+anyrender_vello_cpu = { path = "/Users/justin/code/blitz/packages/anyrender_vello_cpu", features = ["multithreading"], optional = true }
 
-tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
-reqwest = { workspace = true }
-url = { workspace = true }
-winit = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+reqwest = { version = "0.12" }
+url = { version = "2" }
+winit = { version = "0.30" }
 comrak = { version = "0.39", default-features = false, optional = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
-image = { workspace = true, default-features = false, optional = true }
+image = { version = "0.25", default-features = false, optional = true }
 notify = "8.0.0"
