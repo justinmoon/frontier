@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::WindowRenderer;
-use blitz_dom::DocumentConfig;
 use blitz_dom::net::Resource;
+use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
@@ -104,7 +104,9 @@ impl ReadmeApplication {
         // Now fetch the actual target URL
         // Note: raw_url will be updated when NavigationLoad event is received
         self.net_provider.fetch_with_callback(
-            blitz_traits::net::Request::get(url::Url::parse(&target_url).unwrap_or(options.url.clone())),
+            blitz_traits::net::Request::get(
+                url::Url::parse(&target_url).unwrap_or(options.url.clone()),
+            ),
             Box::new(move |result| {
                 let (url, bytes) = result.unwrap();
                 let contents = std::str::from_utf8(&bytes).unwrap().to_string();

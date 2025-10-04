@@ -1,6 +1,6 @@
 //! Render the readme.md using the gpu renderer
 
-use comrak::{ExtensionOptions, Options, Plugins, RenderOptions, markdown_to_html_with_plugins};
+use comrak::{markdown_to_html_with_plugins, ExtensionOptions, Options, Plugins, RenderOptions};
 
 pub(crate) fn markdown_to_html(contents: String) -> String {
     let plugins = Plugins::default();

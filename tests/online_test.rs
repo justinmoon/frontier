@@ -23,5 +23,8 @@ async fn test_load_webpage() {
 
     // Verify we got content
     let h1_elements = doc.query_selector_all("h1").unwrap();
-    assert!(!h1_elements.is_empty(), "Should have loaded example.com with h1 elements");
+    assert!(
+        !h1_elements.is_empty(),
+        "Should have loaded example.com with h1 elements"
+    );
 }

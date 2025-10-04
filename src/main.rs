@@ -17,8 +17,8 @@ use anyrender_vello::VelloWindowRenderer as WindowRenderer;
 #[cfg(feature = "cpu-base")]
 use anyrender_vello_cpu::VelloCpuWindowRenderer as WindowRenderer;
 
-use blitz_dom::DocumentConfig;
 use blitz_dom::net::Resource;
+use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
@@ -28,7 +28,7 @@ use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher 
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
 use blitz_shell::{
-    BlitzShellEvent, BlitzShellNetCallback, WindowConfig, create_default_event_loop,
+    create_default_event_loop, BlitzShellEvent, BlitzShellNetCallback, WindowConfig,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,9 +51,9 @@ impl NavigationProvider for ReadmeNavigationProvider {
 }
 
 fn main() {
-    let raw_url = std::env::args().nth(1).unwrap_or_else(|| {
-        String::from("https://example.com")
-    });
+    let raw_url = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| String::from("https://example.com"));
 
     // Turn on the runtime and enter it
     let rt = tokio::runtime::Builder::new_multi_thread()
