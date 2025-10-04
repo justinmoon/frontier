@@ -1,17 +1,5 @@
 mod readme_application;
 
-mod markdown {
-    #[cfg(feature = "comrak")]
-    mod comrak;
-    #[cfg(feature = "comrak")]
-    pub(crate) use comrak::*;
-
-    #[cfg(feature = "pulldown_cmark")]
-    mod pulldown_cmark;
-    #[cfg(feature = "pulldown_cmark")]
-    pub(crate) use pulldown_cmark::*;
-}
-
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;
 #[cfg(feature = "cpu-base")]
@@ -23,7 +11,6 @@ use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::Request;
-use markdown::markdown_to_html;
 use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher as _};
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
@@ -69,12 +56,10 @@ fn main() {
     let net_callback = BlitzShellNetCallback::shared(proxy.clone());
     let net_provider = Arc::new(Provider::new(net_callback));
 
-    let (base_url, contents, is_md, file_path) =
-        rt.block_on(fetch(&raw_url, Arc::clone(&net_provider)));
+    let (base_url, contents, file_path) = rt.block_on(fetch(&raw_url, Arc::clone(&net_provider)));
 
-    // Process markdown if necessary
     let title = String::from("Frontier Browser");
-    let html = wrap_with_url_bar(&contents, &base_url, is_md);
+    let html = wrap_with_url_bar(&contents, &base_url);
 
     let proxy = event_loop.create_proxy();
     let navigation_provider = ReadmeNavigationProvider {
@@ -126,13 +111,7 @@ fn main() {
     event_loop.run_app(&mut application).unwrap()
 }
 
-pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> String {
-    let body_content = if is_md {
-        markdown_to_html(content.to_string())
-    } else {
-        content.to_string()
-    };
-
+pub fn wrap_with_url_bar(content: &str, current_url: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -248,19 +227,19 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
         </form>
     </nav>
     <main id="content" role="main" aria-label="Page content">
-        {body_content}
+        {content}
     </main>
 </body>
 </html>"#,
         current_url = current_url,
-        body_content = body_content
+        content = content
     )
 }
 
 async fn fetch(
     raw_url: &str,
     net_provider: Arc<Provider<Resource>>,
-) -> (String, String, bool, Option<PathBuf>) {
+) -> (String, String, Option<PathBuf>) {
     if let Ok(url) = Url::parse(raw_url) {
         match url.scheme() {
             "file" => fetch_file_path(url.path()),
@@ -279,7 +258,7 @@ async fn fetch(
 async fn fetch_url(
     url: Url,
     net_provider: Arc<Provider<Resource>>,
-) -> (String, String, bool, Option<PathBuf>) {
+) -> (String, String, Option<PathBuf>) {
     let (tx, rx) = oneshot::channel();
 
     let request = Request::get(url);
@@ -293,53 +272,25 @@ async fn fetch_url(
 
     let (response_url, bytes) = rx.await.unwrap();
 
-    // Detect markdown file
-    // let content_type = response
-    //     .headers()
-    //     .get(HeaderName::from_static("content-type"));
-    // || content_type
-    //     .is_some_and(|ct| ct.to_str().is_ok_and(|ct| ct.starts_with("text/markdown")));
-    let is_md = response_url.ends_with(".md");
-
     // Get the file content
     let file_content = std::str::from_utf8(&bytes).unwrap().to_string();
 
-    (response_url, file_content, is_md, None)
+    (response_url, file_content, None)
 }
 
-fn fetch_file_path(raw_path: &str) -> (String, String, bool, Option<PathBuf>) {
+fn fetch_file_path(raw_path: &str) -> (String, String, Option<PathBuf>) {
     let path = std::path::absolute(Path::new(&raw_path)).unwrap();
 
-    // If path is a directory, search for README.md in that directory or any parent directories
-    let path = if path.is_dir() {
-        let mut maybe_dir: Option<&Path> = Some(path.as_ref());
-        loop {
-            match maybe_dir {
-                Some(dir) => {
-                    let rdme_path = dir.join("README.md");
-                    if fs::exists(&rdme_path).unwrap() {
-                        break rdme_path;
-                    }
-                    maybe_dir = dir.parent()
-                }
-                None => {
-                    eprintln!("Could not find README.md file in the current directory");
-                    std::process::exit(1);
-                }
-            }
-        }
-    } else {
-        path
-    };
+    if path.is_dir() {
+        eprintln!("Path is a directory, not a file: {}", path.display());
+        std::process::exit(1);
+    }
 
     let base_url_path = path.parent().unwrap().to_string_lossy();
     let base_url = format!("file://{base_url_path}/");
-    let is_md = path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
 
     // Read file
     let file_content = std::fs::read_to_string(&path).unwrap();
 
-    (base_url, file_content, is_md, Some(path))
+    (base_url, file_content, Some(path))
 }

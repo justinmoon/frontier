@@ -62,12 +62,12 @@ impl ReadmeApplication {
         let net_provider = Arc::clone(&self.net_provider);
         self.handle.spawn(async move {
             let url = url;
-            let (base_url, contents, is_md, _file_path) = fetch(&url, net_provider).await;
+            let (base_url, contents, _file_path) = fetch(&url, net_provider).await;
             proxy
                 .send_event(BlitzShellEvent::NavigationLoad {
                     url: base_url,
                     contents,
-                    is_md,
+                    is_md: false,
                     retain_scroll_position,
                 })
                 .unwrap();
@@ -127,10 +127,10 @@ impl ReadmeApplication {
         contents: String,
         retain_scroll_position: bool,
         url: String,
-        is_md: bool,
+        _is_md: bool,
     ) {
         use crate::wrap_with_url_bar;
-        let html = wrap_with_url_bar(&contents, &url, is_md);
+        let html = wrap_with_url_bar(&contents, &url);
 
         let doc = HtmlDocument::from_html(
             &html,

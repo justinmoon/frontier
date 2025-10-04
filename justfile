@@ -2,6 +2,10 @@
 run *ARGS:
     cargo run -- {{ARGS}}
 
+# Run CI checks
+ci:
+    nix run .#ci
+
 # Run all tests
 test:
     cargo test
