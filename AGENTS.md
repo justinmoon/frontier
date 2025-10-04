@@ -1,0 +1,20 @@
+# Agents Guide
+
+NO MOCKS. NO FAKE CODE.
+
+Our goal here is to build a new web browser that keeps the best of the dying old web -- html, css, typescript -- and abandons the rest -- particularly centralized 3rd parties like DNS and certificate authorities. We also want to make it nostr-native: every user gets a private key, bitcoin payments are first-class citizens, and the browser itself can implement the hard parts of interacting with relays as web apis: like ingesting relevant notes for a timeline-style event, or saving notes locally, or implementing e2ee messenging like Marmot (~/code/marmot). Lastly, we want to add obvious things that web browsers should have but don't: native typescript support and proper embedded databases like SQLite.
+
+Related projects that you can study for inspiration:
+
+- ~/code/blitz
+- ~/code/nsite
+
+Keep things simple. Try to keep directory structure reasonably flat.
+
+Never stub things out for a real implementation later unless you are explicitely told to do so. Your job is to make a real implementation now.
+
+**NEVER USE MOCKS.** Mocks hide bugs by not exercising real code paths. If absolutely needed, we can have variants of tests that run faster by mocking or just doing unittests -- but our main ci test suite that runs on every PR _must_ run all important tests against real infrastructure where possible to ensure our app works in the wild.
+
+When you're developing a feature that effects the ui, try to create a UI test using blitz's accessibility feautures. This can help give you a feedback loop. Without a feedback loop you struggle to deliver working features because you can't interact with your work.
+
+**`just ci` MUST PASS** before any feature or change is considered complete. The agent must iterate on the code and get all CI checks passing. This includes:
