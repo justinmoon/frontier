@@ -101,10 +101,8 @@ impl ReadmeApplication {
             url_str
         };
 
-        // Update our current URL
-        self.raw_url = target_url.clone();
-
         // Now fetch the actual target URL
+        // Note: raw_url will be updated when NavigationLoad event is received
         self.net_provider.fetch_with_callback(
             blitz_traits::net::Request::get(url::Url::parse(&target_url).unwrap_or(options.url.clone())),
             Box::new(move |result| {
@@ -207,9 +205,10 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                 }
             }
             BlitzShellEvent::Navigate(options) => {
-                let old_url = std::mem::replace(&mut self.raw_url, options.url.to_string());
+                // Don't update raw_url here - it will be updated in navigate()
+                // after extracting the actual URL from the form query parameter
+                let old_url = self.raw_url.clone();
                 self.url_history.push(old_url);
-                self.reload_document(false);
                 self.navigate(*options);
             }
             BlitzShellEvent::NavigationLoad {
@@ -218,6 +217,8 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                 retain_scroll_position,
                 is_md,
             } => {
+                // Update raw_url to the actual loaded URL (not the form submission URL)
+                self.raw_url = url.clone();
                 self.load_document(contents, retain_scroll_position, url, is_md);
             }
             event => self.inner.user_event(event_loop, event),
