@@ -165,54 +165,68 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             top: 0;
             left: 0;
             right: 0;
-            height: 50px;
-            background: #f6f8fa;
-            border-bottom: 1px solid #d0d7de;
+            height: 44px;
+            background: linear-gradient(to bottom, #e8e8e8 0%, #d8d8d8 100%);
+            border-bottom: 1px solid #a0a0a0;
             display: flex;
             align-items: center;
-            padding: 8px 12px;
+            padding: 6px 80px;
             gap: 8px;
             z-index: 1000;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }}
+
+        #url-form {{
+            flex: 1;
+            display: flex;
+            gap: 6px;
+            max-width: 800px;
+            margin: 0 auto;
         }}
 
         #url-input {{
             flex: 1;
-            height: 34px;
-            padding: 0 12px;
-            border: 1px solid #d0d7de;
-            border-radius: 6px;
-            font-size: 14px;
+            height: 28px;
+            padding: 0 10px;
+            border: 1px solid #b8b8b8;
+            border-radius: 5px;
+            font-size: 13px;
             outline: none;
+            background: white;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
         }}
 
         #url-input:focus {{
-            border-color: #0969da;
-            box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+            border-color: #4d90fe;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08),
+                        0 0 0 3px rgba(77, 144, 254, 0.2);
         }}
 
         #go-button {{
-            height: 34px;
-            padding: 0 16px;
-            background: #2da44e;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
+            height: 28px;
+            padding: 0 12px;
+            background: linear-gradient(to bottom, #f8f8f8 0%, #e8e8e8 100%);
+            color: #333;
+            border: 1px solid #b8b8b8;
+            border-radius: 5px;
+            font-size: 12px;
             font-weight: 500;
             cursor: pointer;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }}
 
         #go-button:hover {{
-            background: #2c974b;
+            background: linear-gradient(to bottom, #fafafa 0%, #eaeaea 100%);
         }}
 
         #go-button:active {{
-            background: #298e46;
+            background: linear-gradient(to bottom, #e0e0e0 0%, #d0d0d0 100%);
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
         }}
 
         #content {{
-            margin-top: 50px;
-            padding: 20px;
+            margin-top: 44px;
+            padding: 0;
         }}
     </style>
 </head>
