@@ -76,8 +76,37 @@ impl ReadmeApplication {
 
     fn navigate(&mut self, options: NavigationOptions) {
         let proxy = self.inner.proxy.clone();
+
+        // Check if this is a URL bar form submission by examining the URL
+        let url_str = options.url.to_string();
+
+        // If the URL contains "?url=" it's our URL bar form submission
+        // Extract the actual target URL from the query parameter
+        let target_url = if url_str.contains("?url=") {
+            // Parse the query parameters
+            if let Some(query) = options.url.query() {
+                // Decode the url parameter value
+                let params = url::form_urlencoded::parse(query.as_bytes());
+
+                if let Some((_, url_value)) = params.into_iter().find(|(key, _)| key == "url") {
+                    // Use the URL from the form input
+                    url_value.to_string()
+                } else {
+                    url_str
+                }
+            } else {
+                url_str
+            }
+        } else {
+            url_str
+        };
+
+        // Update our current URL
+        self.raw_url = target_url.clone();
+
+        // Now fetch the actual target URL
         self.net_provider.fetch_with_callback(
-            options.into_request(),
+            blitz_traits::net::Request::get(url::Url::parse(&target_url).unwrap_or(options.url.clone())),
             Box::new(move |result| {
                 let (url, bytes) = result.unwrap();
                 let contents = std::str::from_utf8(&bytes).unwrap().to_string();
