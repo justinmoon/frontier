@@ -141,6 +141,26 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Blitz Browser - {current_url}</title>
     <style>
+        :root {{
+            color-scheme: light dark;
+            --surface: #ffffff;
+            --toolbar-bg: color-mix(in srgb, currentColor 8%, transparent);
+            --toolbar-border: color-mix(in srgb, currentColor 15%, transparent);
+            --input-bg: #ffffff;
+            --input-border: color-mix(in srgb, currentColor 25%, transparent);
+            --button-bg: #2da44e;
+            --button-hover: #2c974b;
+            --button-active: #298e46;
+            --content-bg: color-mix(in srgb, currentColor 4%, transparent);
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --surface: #1e1e1e;
+                --input-bg: color-mix(in srgb, currentColor 6%, transparent);
+            }}
+        }}
+
         * {{
             box-sizing: border-box;
         }}
@@ -153,6 +173,8 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             display: flex;
             flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--surface);
+            color: inherit;
         }}
 
         #url-bar-container {{
@@ -161,8 +183,8 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             left: 0;
             right: 0;
             height: 50px;
-            background: #f6f8fa;
-            border-bottom: 1px solid #d0d7de;
+            background: var(--toolbar-bg);
+            border-bottom: 1px solid var(--toolbar-border);
             display: flex;
             align-items: center;
             padding: 8px 12px;
@@ -171,7 +193,7 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
         }}
 
         #url-form {{
-            width: 100%;
+            flex: 1;
             display: flex;
             gap: 8px;
         }}
@@ -180,12 +202,13 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             flex: 1;
             height: 34px;
             padding: 0 12px;
-            border: 1px solid #d0d7de;
+            border: 1px solid var(--input-border);
             border-radius: 6px;
             font-size: 14px;
             line-height: 34px;
             outline: none;
-            background: white;
+            background: var(--input-bg);
+            color: inherit;
         }}
 
         #url-input:focus {{
@@ -193,12 +216,12 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.3);
         }}
 
-        #go-button {{
+        .toolbar-button {{
             height: 34px;
             padding: 0 16px;
-            background: #2da44e;
-            color: white;
-            border: 1px solid rgba(27, 31, 36, 0.15);
+            background: color-mix(in srgb, currentColor 12%, transparent);
+            color: inherit;
+            border: 1px solid var(--input-border);
             border-radius: 6px;
             font-size: 14px;
             font-weight: 500;
@@ -209,23 +232,56 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             justify-content: center;
         }}
 
+        .toolbar-button:hover:not(:disabled) {{
+            background: color-mix(in srgb, currentColor 18%, transparent);
+        }}
+
+        .toolbar-button:active:not(:disabled) {{
+            background: color-mix(in srgb, currentColor 24%, transparent);
+        }}
+
+        .toolbar-button:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+        }}
+
+        #go-button {{
+            background: var(--button-bg);
+            color: white;
+        }}
+
         #go-button:hover {{
-            background: #2c974b;
+            background: var(--button-hover);
         }}
 
         #go-button:active {{
-            background: #298e46;
+            background: var(--button-active);
         }}
 
         #content {{
             margin-top: 50px;
             padding: 20px;
+            background: var(--content-bg);
+            flex: 1;
+            overflow: auto;
+        }}
+
+        .status-banner {{
+            position: fixed;
+            top: 66px;
+            right: 16px;
+            padding: 8px 14px;
+            background: color-mix(in srgb, currentColor 18%, transparent);
+            border-radius: 999px;
+            font-size: 14px;
+            box-shadow: 0 6px 24px rgb(0 0 0 / 0.2);
+            z-index: 999;
         }}
     </style>
 </head>
 <body>
     <nav id="url-bar-container" role="navigation" aria-label="Browser navigation">
-        <form id="url-form" style="display: flex; flex: 1; gap: 8px;" role="search">
+        <form id="url-form" role="search">
             <label for="url-input" class="sr-only" style="position: absolute; left: -10000px;">
                 Enter website URL
             </label>
@@ -235,8 +291,10 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
                 name="url"
                 value="{current_url}"
                 autofocus
+                autocomplete="url"
+                autocapitalize="none"
                 aria-label="Website URL address bar"
-                placeholder="Enter URL..."
+                placeholder="Enter URL or file path..."
                 required
             />
             <input
@@ -246,10 +304,38 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
                 aria-label="Navigate to URL"
             />
         </form>
+        <button type="button" class="toolbar-button" id="reload-button" aria-label="Reload page">Reload</button>
+        <button type="button" class="toolbar-button" id="back-button" aria-label="Go back" disabled>Back</button>
     </nav>
     <main id="content" role="main" aria-label="Page content">
         {body_content}
     </main>
+    <script>
+        // Reload button - trigger Cmd+R keyboard event
+        document.getElementById('reload-button')?.addEventListener('click', () => {{
+            const event = new KeyboardEvent('keydown', {{
+                key: 'r',
+                code: 'KeyR',
+                metaKey: true,
+                bubbles: true
+            }});
+            document.dispatchEvent(event);
+        }});
+
+        // Back button - trigger Cmd+B keyboard event
+        document.getElementById('back-button')?.addEventListener('click', () => {{
+            const event = new KeyboardEvent('keydown', {{
+                key: 'b',
+                code: 'KeyB',
+                metaKey: true,
+                bubbles: true
+            }});
+            document.dispatchEvent(event);
+        }});
+
+        // Update back button state based on history
+        // For now it's always disabled in the HTML, but will be enabled via history tracking
+    </script>
 </body>
 </html>"#,
         current_url = current_url,
