@@ -140,7 +140,7 @@ echo "🔑 Step 4: Publishing NNS event to local relay..."
 
 # Generate a keypair
 NSEC=$(nak key generate)
-NPUB=$(nak key public --secret "$NSEC")
+NPUB=$(nak key public "$NSEC")
 
 echo "   Generated keypair:"
 echo "   Secret: $NSEC"
@@ -150,19 +150,18 @@ echo ""
 # Publish NNS event (kind 34256) mapping testsite → 127.0.0.1:18080
 echo "   Publishing NNS claim: testsite → 127.0.0.1:18080"
 
-EVENT_JSON=$(nak event --kind 34256 \
-    --tag "d=testsite" \
+# Publish directly to relay
+nak event --kind 34256 \
+    -d testsite \
     --tag "ip=127.0.0.1:18080" \
     --content "" \
-    --secret "$NSEC")
-
-# Publish to local relay
-echo "$EVENT_JSON" | nak relay publish ws://localhost:$RELAY_PORT
+    --sec "$NSEC" \
+    ws://localhost:$RELAY_PORT > /tmp/nak_event_output.json 2>&1
 
 sleep 1
 
 # Verify event was published
-EVENT_ID=$(echo "$EVENT_JSON" | jq -r '.id')
+EVENT_ID=$(cat /tmp/nak_event_output.json 2>/dev/null | jq -r '.id' 2>/dev/null || echo "unknown")
 echo -e "${GREEN}✅ NNS event published${NC}"
 echo "   Event ID: $EVENT_ID"
 echo "   Mapping: testsite → 127.0.0.1:18080"
