@@ -73,7 +73,7 @@ fn main() {
         rt.block_on(fetch(&raw_url, Arc::clone(&net_provider)));
 
     // Process markdown if necessary
-    let title = String::from("Blitz Browser");
+    let title = String::from("Frontier Browser");
     let html = wrap_with_url_bar(&contents, &base_url, is_md);
 
     let proxy = event_loop.create_proxy();
@@ -139,7 +139,7 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Blitz Browser - {current_url}</title>
+    <title>Frontier Browser - {current_url}</title>
     <style>
         * {{
             box-sizing: border-box;
