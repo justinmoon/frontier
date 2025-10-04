@@ -21,10 +21,10 @@ just run https://google.com
 just test
 
 # Fast offline test (no network)
-just test:offline
+just offline
 
 # Online test (requires network)
-just test:online
+just online
 ```
 
 ## How It Works
