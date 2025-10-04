@@ -141,20 +141,18 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Blitz Browser - {current_url}</title>
     <style>
-        html {{
-            margin: 0 !important;
-            padding: 0 !important;
-        }}
-
-        html > body {{
-            display: block;
-            margin: 0 !important;
-            padding: 0 !important;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-        }}
-
         * {{
             box-sizing: border-box;
+        }}
+
+        html, body {{
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
         }}
 
         #url-bar-container {{
