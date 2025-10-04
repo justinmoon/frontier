@@ -205,7 +205,7 @@ echo "  - Browser terminal output for errors"
 echo ""
 
 # Launch the browser with local relay config
-FRONTIER_RELAY_CONFIG="$RELAY_CONFIG" cargo run testsite
+FRONTIER_RELAY_CONFIG="$RELAY_CONFIG" cargo run --bin frontier testsite
 
 echo ""
 echo "Browser closed."
