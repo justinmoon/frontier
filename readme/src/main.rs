@@ -232,13 +232,12 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
                 placeholder="Enter URL..."
                 required
             />
-            <button
+            <input
                 type="submit"
                 id="go-button"
+                value="Go"
                 aria-label="Navigate to URL"
-            >
-                Go
-            </button>
+            />
         </form>
     </nav>
     <main id="content" role="main" aria-label="Page content">

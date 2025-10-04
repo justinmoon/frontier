@@ -23,13 +23,12 @@ fn create_url_bar_document(url: &str) -> HtmlDocument {
                 placeholder="Enter URL..."
                 required
             />
-            <button
+            <input
                 type="submit"
                 id="go-button"
+                value="Go"
                 aria-label="Navigate to URL"
-            >
-                Go
-            </button>
+            />
         </form>
     </nav>
     <main id="content" role="main" aria-label="Page content">
@@ -127,12 +126,11 @@ fn test_go_button_accessibility() {
         "Button should have aria-label"
     );
 
-    // Test button text content
-    let button_text = doc.get_node(go_button_id).unwrap().text_content();
+    // Test button value
     assert_eq!(
-        button_text.trim(),
-        "Go",
-        "Button should contain 'Go' text"
+        go_button_element.attr(local_name!("value")),
+        Some("Go"),
+        "Submit button should have value 'Go'"
     );
 }
 
@@ -500,7 +498,14 @@ fn test_accessibility_compliance() {
 
     assert!(
         go_button_element.attr(local_name!("aria-label")).is_some(),
-        "Interactive button should have aria-label"
+        "Interactive submit button should have aria-label"
+    );
+
+    // Verify it's an input element
+    assert_eq!(
+        go_button_element.name.local.to_string(),
+        "input",
+        "Go button should be an input element for blitz form submission compatibility"
     );
 
     // Verify semantic HTML structure
