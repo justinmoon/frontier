@@ -49,6 +49,7 @@
           ];
 
           buildInputs = with pkgs; [
+            dav1d
             openssl
           ] ++ pkgs.lib.optionals stdenv.isDarwin [
             apple-sdk
@@ -82,12 +83,24 @@
           cargoTestArgs = "--test offline_test";
         });
 
+        ciScript = pkgs.writeShellApplication {
+          name = "frontier-ci";
+          runtimeInputs = [
+            pkgs.nix
+            pkgs.bash
+          ];
+          text = ''
+            exec nix develop .#default --command ${pkgs.bash}/bin/bash ${./scripts/ci.sh}
+          '';
+        };
+
       in
       {
         # Packages
         packages = {
           default = frontier;
           frontier = frontier;
+          ci = ciScript;
         };
 
         # Checks run by `nix flake check`
@@ -135,6 +148,11 @@
         apps.default = flake-utils.lib.mkApp {
           drv = frontier;
           name = "frontier";
+        };
+
+        apps.ci = flake-utils.lib.mkApp {
+          drv = ciScript;
+          name = "frontier-ci";
         };
       }
     );
