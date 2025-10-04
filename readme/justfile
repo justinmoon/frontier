@@ -1,0 +1,28 @@
+# Run the browser
+run *ARGS:
+    cargo run -- {{ARGS}}
+
+# Run offline tests (fast, no network required)
+test-offline:
+    cargo test --test offline_test
+
+# Run online tests (requires network)
+test-online:
+    cargo test --test online_test -- --ignored
+
+# Run all tests
+test-all:
+    cargo test
+    cargo test --test online_test -- --ignored
+
+# Build the browser
+build:
+    cargo build
+
+# Build release version
+build-release:
+    cargo build --release
+
+# Clean build artifacts
+clean:
+    cargo clean
