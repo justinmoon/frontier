@@ -7,7 +7,9 @@ Our goal here is to build a new web browser that keeps the best of the dying old
 Related projects that you can study for inspiration:
 
 - ~/code/blitz
+- ~/code/dioxus
 - ~/code/nsite
+- many more in ~/code
 
 Keep things simple. Try to keep directory structure reasonably flat.
 
