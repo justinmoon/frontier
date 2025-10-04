@@ -183,6 +183,7 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             border: 1px solid #d0d7de;
             border-radius: 6px;
             font-size: 14px;
+            line-height: 34px;
             outline: none;
             background: white;
         }}
@@ -201,7 +202,11 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             border-radius: 6px;
             font-size: 14px;
             font-weight: 500;
+            line-height: 34px;
             cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }}
 
         #go-button:hover {{
