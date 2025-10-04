@@ -142,9 +142,11 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
 
     format!(
         r#"<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blitz Browser - {current_url}</title>
     <style>
         {styles}
 
@@ -204,6 +206,10 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
             background: #2c974b;
         }}
 
+        #go-button:active {{
+            background: #298e46;
+        }}
+
         #content {{
             margin-top: 50px;
             padding: 20px;
@@ -211,15 +217,33 @@ pub fn wrap_with_url_bar(content: &str, current_url: &str, is_md: bool) -> Strin
     </style>
 </head>
 <body>
-    <div id="url-bar-container">
-        <form id="url-form" style="display: flex; flex: 1; gap: 8px;">
-            <input type="text" id="url-input" name="url" value="{current_url}" autofocus />
-            <button type="submit" id="go-button">Go</button>
+    <nav id="url-bar-container" role="navigation" aria-label="Browser navigation">
+        <form id="url-form" style="display: flex; flex: 1; gap: 8px;" role="search">
+            <label for="url-input" class="sr-only" style="position: absolute; left: -10000px;">
+                Enter website URL
+            </label>
+            <input
+                type="url"
+                id="url-input"
+                name="url"
+                value="{current_url}"
+                autofocus
+                aria-label="Website URL address bar"
+                placeholder="Enter URL..."
+                required
+            />
+            <button
+                type="submit"
+                id="go-button"
+                aria-label="Navigate to URL"
+            >
+                Go
+            </button>
         </form>
-    </div>
-    <div id="content">
+    </nav>
+    <main id="content" role="main" aria-label="Page content">
         {body_content}
-    </div>
+    </main>
 </body>
 </html>"#,
         styles = styles,

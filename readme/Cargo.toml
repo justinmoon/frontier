@@ -35,3 +35,6 @@ comrak = { version = "0.39", default-features = false, optional = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 notify = "8.0.0"
+
+[dev-dependencies]
+accesskit = "0.17"
