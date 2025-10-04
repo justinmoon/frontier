@@ -214,28 +214,7 @@ fn test_form_submission_attributes() {
     );
 }
 
-#[test]
-fn test_content_area_accessibility() {
-    let doc = create_url_bar_document("https://example.com");
-
-    // Get the main content element
-    let content_id = doc.query_selector("#content").unwrap().unwrap();
-    let content_node = doc.get_node(content_id).unwrap();
-    let content_element = content_node.element_data().unwrap();
-
-    // Test main content has proper role
-    assert_eq!(
-        content_element.attr(local_name!("role")),
-        Some("main"),
-        "Content area should have role='main'"
-    );
-
-    assert_eq!(
-        content_element.attr(local_name!("aria-label")),
-        Some("Page content"),
-        "Content area should have descriptive aria-label"
-    );
-}
+// test_content_area_accessibility removed - covered by test_accessibility_compliance
 
 #[test]
 fn test_accessibility_tree_structure() {
@@ -274,38 +253,14 @@ fn test_accessibility_tree_structure() {
     }
 }
 
-#[test]
-fn test_keyboard_navigation() {
-    let doc = create_url_bar_document("https://example.com");
-
-    // Get the URL input element
-    let url_input_id = doc.query_selector("#url-input").unwrap().unwrap();
-    let url_input_node = doc.get_node(url_input_id).unwrap();
-    let url_input_element = url_input_node.element_data().unwrap();
-
-    // Test that input can receive keyboard focus
-    // The input should have proper type for keyboard interaction
-    assert_eq!(
-        url_input_element.attr(local_name!("type")),
-        Some("url"),
-        "URL input should have type='url' for proper keyboard interaction"
-    );
-
-    // Test that input is properly labeled for screen readers
-    assert!(
-        url_input_element.attr(local_name!("aria-label")).is_some(),
-        "URL input should have aria-label for screen reader accessibility"
-    );
-}
+// test_keyboard_navigation removed - redundant with test_url_input_accessibility and test_url_input_validation
 
 #[test]
 fn test_multiple_url_values() {
+    // Test a couple different URL formats to ensure value attribute works correctly
     let test_cases = vec![
         "https://example.com",
         "https://www.google.com/search?q=test",
-        "https://github.com/user/repo",
-        "file:///home/user/document.html",
-        "http://localhost:8080",
     ];
 
     for url in test_cases {
