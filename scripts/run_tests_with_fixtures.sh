@@ -116,17 +116,16 @@ echo "  Public key: $NPUB"
 echo ""
 
 # Publish event mapping testsite → 127.0.0.1:18080
-EVENT_JSON=$(nak event --kind 34256 \
-    --tag "d=testsite" \
+nak event --kind 34256 \
+    -d testsite \
     --tag "ip=127.0.0.1:18080" \
     --content "" \
-    --sec "$NSEC")
-
-echo "$EVENT_JSON" | nak relay publish ws://localhost:7777
+    --sec "$NSEC" \
+    ws://localhost:7777 > /tmp/nak_event_output.json 2>&1
 
 sleep 1
 
-EVENT_ID=$(echo "$EVENT_JSON" | jq -r '.id')
+EVENT_ID=$(cat /tmp/nak_event_output.json 2>/dev/null | jq -r '.id' 2>/dev/null || echo "unknown")
 echo -e "${GREEN}✅ Published NNS event${NC}"
 echo "  Event ID: $EVENT_ID"
 echo "  Mapping: testsite → 127.0.0.1:18080"
