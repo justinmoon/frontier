@@ -1,3 +1,4 @@
 /target
-Cargo.lock
-worktrees
+/worktrees
+.direnv
+result

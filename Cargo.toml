@@ -18,14 +18,14 @@ log_phase_times = ["blitz-dom/log_phase_times"]
 incremental = ["blitz-dom/incremental"]
 
 [dependencies]
-blitz-traits = { path = "/Users/justin/code/blitz/packages/blitz-traits" }
-blitz-dom = { path = "/Users/justin/code/blitz/packages/blitz-dom", features = ["default", "parallel-construct"] }
-blitz-html = { path = "/Users/justin/code/blitz/packages/blitz-html" }
-blitz-paint = { path = "/Users/justin/code/blitz/packages/blitz-paint", features = ["default"] }
-blitz-net = { path = "/Users/justin/code/blitz/packages/blitz-net", features = ["cookies"] }
-blitz-shell = { path = "/Users/justin/code/blitz/packages/blitz-shell", features = ["tracing", "default"] }
-anyrender_vello = { path = "/Users/justin/code/blitz/packages/anyrender_vello", optional = true }
-anyrender_vello_cpu = { path = "/Users/justin/code/blitz/packages/anyrender_vello_cpu", features = ["multithreading"], optional = true }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["default", "parallel-construct"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["default"] }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["cookies"] }
+blitz-shell = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["tracing", "default"] }
+anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", optional = true }
+anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 reqwest = { version = "0.12" }
