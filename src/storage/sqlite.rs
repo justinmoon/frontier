@@ -71,6 +71,26 @@ impl Storage {
         Ok(Self { pool })
     }
 
+    /// Create storage with custom path (primarily for testing)
+    #[allow(dead_code)]
+    pub fn new_with_path(path: &std::path::Path) -> Result<Self, StorageError> {
+        let db_path = path.join("frontier.db");
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).map_err(|_| StorageError::DataDir)?;
+        }
+
+        let manager = SqliteConnectionManager::file(&db_path);
+        let pool = Pool::builder()
+            .max_size(4)
+            .connection_customizer(Box::new(SqliteCustomizer))
+            .build(manager)?;
+
+        let conn = pool.get()?;
+        initialise_schema(&conn)?;
+
+        Ok(Self { pool })
+    }
+
     pub fn save_claim(&self, claim: &ClaimRecord) -> Result<(), StorageError> {
         let conn = self.pool.get()?;
         let relays_json = serde_json::to_value(&claim.relays)?;

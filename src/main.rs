@@ -1,5 +1,3 @@
-mod chrome;
-mod claim_selector;
 mod input;
 mod navigation;
 mod net;

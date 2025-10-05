@@ -42,6 +42,7 @@ pub struct NnsResolver {
     storage: Arc<Storage>,
     relay_directory: RelayDirectory,
     client: NostrClient,
+    timeout: Duration,
 }
 
 impl NnsResolver {
@@ -54,6 +55,23 @@ impl NnsResolver {
             storage,
             relay_directory,
             client,
+            timeout: Duration::from_secs(3),
+        }
+    }
+
+    /// Create resolver with custom timeout (primarily for testing)
+    #[allow(dead_code)]
+    pub fn new_with_timeout(
+        storage: Arc<Storage>,
+        relay_directory: RelayDirectory,
+        client: NostrClient,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            storage,
+            relay_directory,
+            client,
+            timeout,
         }
     }
 
@@ -78,11 +96,7 @@ impl NnsResolver {
 
         let events = self
             .client
-            .fetch_events(
-                self.relay_directory.relays(),
-                filter,
-                Duration::from_secs(3),
-            )
+            .fetch_events(self.relay_directory.relays(), filter, self.timeout)
             .await?;
 
         let mut claims_map: HashMap<String, NnsClaim> = HashMap::new();
