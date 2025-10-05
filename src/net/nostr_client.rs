@@ -20,6 +20,12 @@ pub struct RelayEvent {
 #[derive(Clone)]
 pub struct NostrClient;
 
+impl Default for NostrClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NostrClient {
     pub fn new() -> Self {
         Self
