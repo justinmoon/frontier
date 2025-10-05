@@ -1,4 +1,5 @@
 use anyhow::{Context as AnyhowContext, Result};
+use blitz_dom::BaseDocument;
 
 use super::environment::JsDomEnvironment;
 use super::processor::{filter_inline_classic, run_inline_scripts, ScriptExecutionSummary};
@@ -9,6 +10,7 @@ pub struct JsPageRuntime {
     environment: JsDomEnvironment,
     scripts: Vec<ScriptDescriptor>,
     executed_blocking: bool,
+    bridge_attached: bool,
 }
 
 impl JsPageRuntime {
@@ -25,6 +27,7 @@ impl JsPageRuntime {
             environment,
             scripts: scripts.to_vec(),
             executed_blocking: false,
+            bridge_attached: false,
         }))
     }
 
@@ -55,5 +58,15 @@ impl JsPageRuntime {
     /// Expose the script manifest associated with this runtime.
     pub fn scripts(&self) -> &[ScriptDescriptor] {
         &self.scripts
+    }
+
+    /// Attach the runtime to the live Blitz document so subsequent mutations
+    /// operate on the rendered tree.
+    pub fn attach_document(&mut self, document: &mut BaseDocument) {
+        if self.bridge_attached {
+            return;
+        }
+        self.environment.attach_document(document);
+        self.bridge_attached = true;
     }
 }

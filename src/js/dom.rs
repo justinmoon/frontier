@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use blitz_dom::BaseDocument;
 use kuchiki::traits::*;
 use kuchiki::{parse_fragment, parse_html, NodeRef};
 use serde::{Deserialize, Serialize};
+
+use super::bridge::BlitzJsBridge;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -155,10 +158,10 @@ impl DomSnapshot {
     }
 }
 
-#[derive(Debug)]
 pub struct DomState {
     snapshot: DomSnapshot,
     mutations: Vec<DomPatch>,
+    bridge: Option<BlitzJsBridge>,
 }
 
 impl DomState {
@@ -166,6 +169,7 @@ impl DomState {
         Self {
             snapshot,
             mutations: Vec::new(),
+            bridge: None,
         }
     }
 
@@ -181,8 +185,17 @@ impl DomState {
         self.snapshot.inner_html(id)
     }
 
+    pub fn attach_document(&mut self, document: &mut BaseDocument) {
+        self.bridge = Some(BlitzJsBridge::new(document));
+    }
+
     pub fn apply_patch(&mut self, patch: DomPatch) -> Result<bool> {
         let changed = self.snapshot.apply_patch(&patch)?;
+
+        if let Some(bridge) = self.bridge.as_mut() {
+            bridge.apply_patch(&patch)?;
+        }
+
         if changed {
             self.mutations.push(patch);
         }

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use blitz_dom::BaseDocument;
 use rquickjs::{Ctx, Function, IntoJs};
 
 use super::dom::{DomPatch, DomSnapshot, DomState};
@@ -32,6 +33,10 @@ impl JsDomEnvironment {
 
     pub fn document_html(&self) -> Result<String> {
         self.state.borrow().to_html()
+    }
+
+    pub fn attach_document(&self, document: &mut BaseDocument) {
+        self.state.borrow_mut().attach_document(document);
     }
 }
 

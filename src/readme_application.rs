@@ -212,7 +212,7 @@ impl ReadmeApplication {
     fn render_current_document(&mut self, retain_scroll: bool) {
         if let Some(document) = &self.current_document {
             let html = self.compose_html();
-            let doc = HtmlDocument::from_html(
+            let mut doc = HtmlDocument::from_html(
                 &html,
                 DocumentConfig {
                     base_url: Some(document.base_url.clone()),
@@ -222,6 +222,11 @@ impl ReadmeApplication {
                     ..Default::default()
                 },
             );
+
+            if let Some(runtime) = self.current_js_runtime.as_mut() {
+                runtime.attach_document(&mut *doc);
+            }
+
             self.window_mut()
                 .replace_document(Box::new(doc) as _, retain_scroll);
         }
