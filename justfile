@@ -6,20 +6,13 @@ run *ARGS:
 ci:
     nix run .#ci
 
-# Run all tests
-test:
-    cargo test
-    cargo test --test online_test -- --ignored
-
-# Run NNS E2E test (includes fixtures)
-[group('test')]
-nns-e2e:
-    cargo test --test nns_e2e_test -- --nocapture
-
-# Run NNS E2E test with manual browser (starts fixtures and launches browser)
-[group('test')]
-nns-manual:
-    ./scripts/test_nns_full_e2e.sh
+# Run all tests (or specific test with args)
+test *ARGS:
+    @if [ -z "{{ARGS}}" ]; then \
+        cargo test && cargo test --test online_test -- --ignored; \
+    else \
+        cargo test {{ARGS}}; \
+    fi
 
 # Run offline tests (fast, no network required)
 [group('test')]
