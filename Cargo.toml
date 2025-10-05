@@ -50,6 +50,11 @@ html-escape = "0.2"
 serde_yaml = "0.9"
 sha2 = "0.10"
 anyhow = "1.0"
+rustls = "0.23"
+rustls-pemfile = "2.0"
+webpki = "0.22"
+x509-parser = "0.16"
+hex = "0.4"
 
 [dev-dependencies]
 accesskit = "0.17"
@@ -59,3 +64,6 @@ tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
 tokio-tungstenite = "0.21"
+tokio-rustls = "0.26"
+ring = "0.17"
+rcgen = "0.13"

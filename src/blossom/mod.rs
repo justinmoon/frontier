@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ::url::Url;
 use directories::ProjectDirs;
 use nostr_sdk::prelude::*;
+use rustls::ClientConfig;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use crate::net::{NostrClient, NostrClientError, RelayDirectory};
+use crate::net::{NostrCertVerifier, NostrClient, NostrClientError, RelayDirectory};
 
 const MANIFEST_TTL: Duration = Duration::from_secs(300);
 const CACHE_SUBDIR: &str = "blossom-cache";
@@ -115,16 +117,26 @@ impl BlossomFetcher {
             .get(path)
             .cloned()
             .ok_or_else(|| BlossomError::MissingPath(path.to_string()))?;
-        let bytes = self.fetch_blob(servers, &entry.hash).await?;
+        let bytes = self.fetch_blob(servers, &entry.hash, None).await?;
         Ok((bytes, entry))
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_blob_by_hash(
         &self,
         servers: &[Url],
         hash: &str,
     ) -> Result<Vec<u8>, BlossomError> {
-        self.fetch_blob(servers, hash).await
+        self.fetch_blob(servers, hash, None).await
+    }
+
+    pub async fn fetch_blob_by_hash_with_tls(
+        &self,
+        servers: &[Url],
+        hash: &str,
+        tls_pubkey: Option<&str>,
+    ) -> Result<Vec<u8>, BlossomError> {
+        self.fetch_blob(servers, hash, tls_pubkey).await
     }
 
     pub async fn manifest_for(
@@ -208,7 +220,12 @@ impl BlossomFetcher {
         Ok(manifest)
     }
 
-    async fn fetch_blob(&self, servers: &[Url], hash: &str) -> Result<Vec<u8>, BlossomError> {
+    async fn fetch_blob(
+        &self,
+        servers: &[Url],
+        hash: &str,
+        tls_pubkey: Option<&str>,
+    ) -> Result<Vec<u8>, BlossomError> {
         validate_hash(hash)?;
 
         if let Some(bytes) = self.try_cache(hash)? {
@@ -217,7 +234,7 @@ impl BlossomFetcher {
 
         let mut last_error: Option<BlossomError> = None;
         for server in servers {
-            match self.try_fetch_from_server(server, hash).await {
+            match self.try_fetch_from_server(server, hash, tls_pubkey).await {
                 Ok(bytes) => {
                     self.persist_cache(hash, &bytes).await?;
                     return Ok(bytes);
@@ -264,11 +281,30 @@ impl BlossomFetcher {
         &self,
         server: &Url,
         hash: &str,
+        tls_pubkey: Option<&str>,
     ) -> Result<Vec<u8>, BlossomError> {
         let url = server
             .join(hash)
             .map_err(|e| BlossomError::Manifest(e.to_string()))?;
-        let response = self.http.get(url).send().await?;
+
+        // Use custom TLS verification if pubkey is provided
+        let response = if let Some(pubkey) = tls_pubkey {
+            let verifier = Arc::new(NostrCertVerifier::new(pubkey.to_string()));
+            let config = ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth();
+
+            let client = reqwest::Client::builder()
+                .use_preconfigured_tls(config)
+                .timeout(Duration::from_secs(10))
+                .build()?;
+
+            client.get(url).send().await?
+        } else {
+            self.http.get(url).send().await?
+        };
+
         if !response.status().is_success() {
             return Err(BlossomError::Manifest(format!(
                 "server {} returned status {}",

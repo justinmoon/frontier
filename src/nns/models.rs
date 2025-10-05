@@ -48,6 +48,9 @@ pub struct NnsClaim {
     pub relays: HashSet<Url>,
     pub note: Option<String>,
     pub event_id: EventId,
+    pub tls_pubkey: Option<String>,
+    #[allow(dead_code)]
+    pub tls_alg: Option<String>,
 }
 
 impl NnsClaim {
@@ -70,6 +73,8 @@ impl NnsClaim {
         let mut blossom_hash: Option<String> = None;
         let mut servers: Vec<Url> = Vec::new();
         let mut note: Option<String> = None;
+        let mut tls_pubkey: Option<String> = None;
+        let mut tls_alg: Option<String> = None;
 
         for tag in event.tags.iter() {
             let parts = tag.as_vec();
@@ -103,6 +108,16 @@ impl NnsClaim {
                 "note" => {
                     if let Some(value) = parts.get(1) {
                         note = Some(value.clone());
+                    }
+                }
+                "tls-pubkey" => {
+                    if let Some(value) = parts.get(1) {
+                        tls_pubkey = Some(value.clone());
+                    }
+                }
+                "tls-alg" => {
+                    if let Some(value) = parts.get(1) {
+                        tls_alg = Some(value.clone());
                     }
                 }
                 _ => {}
@@ -148,6 +163,8 @@ impl NnsClaim {
             relays: relay_event.relays.clone(),
             note,
             event_id: event.id,
+            tls_pubkey,
+            tls_alg,
         })
     }
 }

@@ -296,6 +296,7 @@ impl ReadmeApplication {
                 servers: context.servers.clone(),
                 relays: context.relays.clone(),
                 path: path.clone(),
+                tls_pubkey: None,
             }),
             display_url: blossom_display_label(&context.name, &path),
         };

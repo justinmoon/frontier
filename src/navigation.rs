@@ -6,11 +6,13 @@ use ::url::Url;
 use blitz_dom::net::Resource;
 use blitz_net::Provider;
 use blitz_traits::net::Request;
+use rustls::ClientConfig;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
 use crate::blossom::{BlossomError, BlossomFetcher};
 use crate::input::{parse_input, ParseInputError, ParsedInput};
+use crate::net::NostrCertVerifier;
 use crate::nns::{ClaimLocation, NnsClaim, NnsResolver, ResolverError, ResolverOutput};
 
 pub(crate) const DEFAULT_BLOSSOM_PATHS: &[&str] = &["/index.html", "/index.htm", "/index", "/"];
@@ -23,7 +25,10 @@ pub struct FetchRequest {
 
 #[derive(Debug, Clone)]
 pub enum FetchSource {
-    Network { url: Url },
+    Network {
+        url: Url,
+        tls_pubkey: Option<String>,
+    },
     Blossom(BlossomFetchRequest),
 }
 
@@ -35,6 +40,7 @@ pub struct BlossomFetchRequest {
     pub servers: Vec<Url>,
     pub relays: Vec<Url>,
     pub path: String,
+    pub tls_pubkey: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +109,10 @@ pub async fn prepare_navigation(
     match parsed {
         ParsedInput::Url(url) | ParsedInput::DirectIp(url) => {
             let request = FetchRequest {
-                source: FetchSource::Network { url },
+                source: FetchSource::Network {
+                    url,
+                    tls_pubkey: None,
+                },
                 display_url: if trimmed.is_empty() {
                     String::from("about:blank")
                 } else {
@@ -150,9 +159,14 @@ pub async fn execute_fetch(
     blossom: Arc<BlossomFetcher>,
 ) -> Result<FetchedDocument, FetchError> {
     match &request.source {
-        FetchSource::Network { url } => {
+        FetchSource::Network { url, tls_pubkey } => {
             if url.scheme() == "file" {
                 return fetch_file_url(url, &request.display_url);
+            }
+
+            // If TLS verification is required, use reqwest directly
+            if let Some(pubkey) = tls_pubkey {
+                return fetch_with_tls_verification(url, pubkey, &request.display_url).await;
             }
 
             let (tx, rx) = oneshot::channel();
@@ -189,6 +203,48 @@ pub async fn execute_fetch(
                 .await
         }
     }
+}
+
+async fn fetch_with_tls_verification(
+    url: &Url,
+    expected_pubkey: &str,
+    display_url: &str,
+) -> Result<FetchedDocument, FetchError> {
+    // Build custom TLS config with Nostr cert verifier
+    let verifier = Arc::new(NostrCertVerifier::new(expected_pubkey.to_string()));
+    let config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+
+    // Build reqwest client with custom TLS
+    let client = reqwest::Client::builder()
+        .use_preconfigured_tls(config)
+        .build()
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+
+    // Fetch the URL
+    let response = client
+        .get(url.as_str())
+        .send()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+
+    let final_url = response.url().to_string();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+
+    let contents = std::str::from_utf8(&bytes)?.to_string();
+
+    Ok(FetchedDocument {
+        base_url: final_url,
+        contents,
+        file_path: None,
+        display_url: display_url.to_string(),
+        blossom: None,
+    })
 }
 
 fn fetch_file_url(url: &Url, display_url: &str) -> Result<FetchedDocument, FetchError> {
@@ -314,9 +370,18 @@ pub(crate) fn claim_fetch_request_with_path(
 ) -> Result<FetchRequest, NavigationError> {
     let source = match &claim.location {
         ClaimLocation::DirectIp(addr) => {
-            let url = Url::parse(&format!("http://{}", addr))
+            // Use HTTPS if TLS pubkey is provided, otherwise fall back to HTTP
+            let scheme = if claim.tls_pubkey.is_some() {
+                "https"
+            } else {
+                "http"
+            };
+            let url = Url::parse(&format!("{}://{}", scheme, addr))
                 .map_err(|_| NavigationError::Unsupported)?;
-            FetchSource::Network { url }
+            FetchSource::Network {
+                url,
+                tls_pubkey: claim.tls_pubkey.clone(),
+            }
         }
         ClaimLocation::Blossom { root_hash, servers } => {
             let servers = servers.clone();
@@ -331,6 +396,7 @@ pub(crate) fn claim_fetch_request_with_path(
                 servers,
                 relays,
                 path,
+                tls_pubkey: claim.tls_pubkey.clone(),
             })
         }
     };
@@ -365,7 +431,11 @@ async fn fetch_blossom_document(
         };
 
         match blossom
-            .fetch_blob_by_hash(&request.servers, &entry.hash)
+            .fetch_blob_by_hash_with_tls(
+                &request.servers,
+                &entry.hash,
+                request.tls_pubkey.as_deref(),
+            )
             .await
         {
             Ok(bytes) => {

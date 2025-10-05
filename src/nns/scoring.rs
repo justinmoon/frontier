@@ -44,6 +44,8 @@ mod tests {
             relays: relay_set,
             note: None,
             event_id: EventId::from_hex("f".repeat(64)).unwrap(),
+            tls_pubkey: None,
+            tls_alg: None,
         }
     }
 

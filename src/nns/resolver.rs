@@ -213,6 +213,8 @@ impl NnsResolver {
             relays,
             note: None,
             event_id,
+            tls_pubkey: None,
+            tls_alg: None,
         }))
     }
 
