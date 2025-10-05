@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
 // Import our NNS modules
-use frontier::{NnsResolver, NostrClient, RelayDirectory, Storage};
+use frontier::{nns::ClaimLocation, NnsResolver, NostrClient, RelayDirectory, Storage};
 
 #[tokio::test]
 async fn test_nns_resolution_end_to_end() {
@@ -65,17 +65,18 @@ async fn test_nns_resolution_end_to_end() {
         .resolve("testsite")
         .await
         .expect("resolution failed");
+    let addr = match output.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => addr,
+        ClaimLocation::Blossom { .. } => panic!("expected direct IP claim"),
+    };
     assert_eq!(
-        output.claims.primary.socket_addr, http_server.addr,
+        addr, http_server.addr,
         "resolver should return HTTP server address"
     );
-    println!(
-        "✓ NNS resolution successful: testsite → {}",
-        output.claims.primary.socket_addr
-    );
+    println!("✓ NNS resolution successful: testsite → {}", addr);
 
     // Step 6: Fetch content from resolved IP using reqwest
-    let fetch_url = format!("http://{}", output.claims.primary.socket_addr);
+    let fetch_url = format!("http://{}", addr);
     let response = reqwest::get(&fetch_url).await.expect("HTTP fetch failed");
     let content = response.text().await.expect("failed to read response");
 

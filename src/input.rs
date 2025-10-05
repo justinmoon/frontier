@@ -8,6 +8,7 @@ pub enum ParsedInput {
     Url(Url),
     DirectIp(Url),
     NnsName(String),
+    NnsPath { name: String, path: String },
 }
 
 #[derive(Debug, Error)]
@@ -46,6 +47,21 @@ pub fn parse_input(raw: &str) -> Result<ParsedInput, ParseInputError> {
         }
     }
 
+    if let Some((name_part, remainder)) = trimmed.split_once('/') {
+        let normalized_name = name_part.to_ascii_lowercase();
+        if normalized_name.chars().all(is_valid_name_char) {
+            let normalized_path = if remainder.is_empty() {
+                String::from('/')
+            } else {
+                normalize_path_component(remainder)
+            };
+            return Ok(ParsedInput::NnsPath {
+                name: normalized_name,
+                path: normalized_path,
+            });
+        }
+    }
+
     if trimmed.contains('.') || trimmed.contains('/') {
         let url =
             Url::parse(&format!("https://{trimmed}")).map_err(|_| ParseInputError::InvalidUrl)?;
@@ -62,6 +78,17 @@ pub fn parse_input(raw: &str) -> Result<ParsedInput, ParseInputError> {
 
 fn is_valid_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_')
+}
+
+fn normalize_path_component(path: &str) -> String {
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    let mut normalized = path.trim().to_string();
+    while normalized.starts_with('/') {
+        normalized.remove(0);
+    }
+    format!("/{}", normalized)
 }
 
 #[cfg(test)]
@@ -100,5 +127,17 @@ mod tests {
     #[test]
     fn rejects_invalid() {
         assert!(parse_input("???").is_err());
+    }
+
+    #[test]
+    fn parses_nns_with_path() {
+        let parsed = parse_input("justinmoon/about.html").unwrap();
+        match parsed {
+            ParsedInput::NnsPath { name, path } => {
+                assert_eq!(name, "justinmoon");
+                assert_eq!(path, "/about.html");
+            }
+            _ => panic!("expected nns path"),
+        }
     }
 }

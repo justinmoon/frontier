@@ -226,6 +226,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
 name = "anyrender"
 version = "0.5.0"
 source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
@@ -1998,6 +2004,7 @@ name = "frontier"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "anyhow",
  "anyrender_vello",
  "anyrender_vello_cpu",
  "blitz-dom",
@@ -2020,6 +2027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -6095,6 +6103,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "slab",
  "socket2",
  "tokio-macros",

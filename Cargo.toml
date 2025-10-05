@@ -25,13 +25,13 @@ blitz-shell = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796
 anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", optional = true }
 anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process"] }
 reqwest = { version = "0.12" }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
 tokio-tungstenite = "0.21"
-url = { version = "2" }
+url = { version = "2", features = ["serde"] }
 winit = { version = "0.30" }
 image = { version = "0.25", default-features = false, optional = true }
 notify = "8.0.0"
@@ -48,10 +48,12 @@ thiserror = "1.0"
 directories = "5.0"
 html-escape = "0.2"
 serde_yaml = "0.9"
+sha2 = "0.10"
+anyhow = "1.0"
 
 [dev-dependencies]
 accesskit = "0.17"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "signal", "process"] }
 reqwest = { version = "0.12" }
 tempfile = "3.10"
 futures-util = "0.3"

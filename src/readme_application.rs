@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use crate::blossom::BlossomFetcher;
 use crate::navigation::{
-    execute_fetch, prepare_navigation, FetchRequest, FetchedDocument, NavigationPlan,
-    SelectionPrompt,
+    execute_fetch, prepare_navigation, BlossomFetchRequest, FetchRequest, FetchSource,
+    FetchedDocument, NavigationPlan, SelectionPrompt,
 };
-use crate::nns::NnsResolver;
+use crate::nns::{ClaimLocation, NnsClaim, NnsResolver};
 use crate::storage::unix_timestamp;
 use crate::WindowRenderer;
 use ::url::Url;
@@ -25,18 +26,18 @@ use winit::window::{Theme, WindowId};
 #[derive(Debug, Clone)]
 pub enum ReadmeEvent {
     Refresh,
-    Navigation(NavigationMessage),
+    Navigation(Box<NavigationMessage>),
 }
 
 #[derive(Debug, Clone)]
 pub enum NavigationMessage {
     Completed {
-        document: FetchedDocument,
+        document: Box<FetchedDocument>,
         prompt: Option<SelectionPrompt>,
         retain_scroll: bool,
     },
     Prompt {
-        prompt: SelectionPrompt,
+        prompt: Box<SelectionPrompt>,
         retain_scroll: bool,
     },
     Failed {
@@ -55,6 +56,7 @@ pub struct ReadmeApplication {
     handle: Handle,
     net_provider: Arc<Provider<Resource>>,
     resolver: Arc<NnsResolver>,
+    blossom: Arc<BlossomFetcher>,
     navigation_provider: Arc<dyn NavigationProvider>,
     keyboard_modifiers: Modifiers,
     current_input: String,
@@ -70,12 +72,14 @@ impl ReadmeApplication {
         net_provider: Arc<Provider<Resource>>,
         navigation_provider: Arc<dyn NavigationProvider>,
         resolver: Arc<NnsResolver>,
+        blossom: Arc<BlossomFetcher>,
     ) -> Self {
         Self {
             inner: BlitzApplication::new(proxy),
             handle: Handle::current(),
             net_provider,
             resolver,
+            blossom,
             navigation_provider,
             keyboard_modifiers: Default::default(),
             current_input: initial_input,
@@ -163,39 +167,27 @@ impl ReadmeApplication {
     fn spawn_navigation(&mut self, input: String, retain_scroll: bool) {
         let resolver = Arc::clone(&self.resolver);
         let net_provider = Arc::clone(&self.net_provider);
+        let blossom = Arc::clone(&self.blossom);
         let proxy = self.inner.proxy.clone();
 
         self.handle.spawn(async move {
             match prepare_navigation(&input, resolver).await {
                 Ok(NavigationPlan::Fetch(request)) => {
-                    match execute_fetch(&request, net_provider).await {
-                        Ok(document) => {
-                            let event = ReadmeEvent::Navigation(NavigationMessage::Completed {
-                                document,
-                                prompt: None,
-                                retain_scroll,
-                            });
-                            let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
-                        }
-                        Err(err) => {
-                            let event = ReadmeEvent::Navigation(NavigationMessage::Failed {
-                                message: err.to_string(),
-                            });
-                            let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
-                        }
-                    }
+                    let proxy_clone = proxy.clone();
+                    run_fetch_task(request, net_provider, blossom, proxy_clone, retain_scroll)
+                        .await;
                 }
                 Ok(NavigationPlan::RequiresSelection(prompt)) => {
-                    let event = ReadmeEvent::Navigation(NavigationMessage::Prompt {
-                        prompt,
+                    let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Prompt {
+                        prompt: Box::new(prompt),
                         retain_scroll,
-                    });
+                    }));
                     let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
                 }
                 Err(err) => {
-                    let event = ReadmeEvent::Navigation(NavigationMessage::Failed {
+                    let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Failed {
                         message: err.to_string(),
-                    });
+                    }));
                     let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
                 }
             }
@@ -213,6 +205,7 @@ impl ReadmeApplication {
 
         let resolver = Arc::clone(&self.resolver);
         let net_provider = Arc::clone(&self.net_provider);
+        let blossom = Arc::clone(&self.blossom);
         let proxy = self.inner.proxy.clone();
         let name = state.prompt.name.clone();
         let display_url = state.prompt.display_url.clone();
@@ -222,35 +215,30 @@ impl ReadmeApplication {
 
         self.handle.spawn(async move {
             if let Err(err) = resolver.record_selection(&name, &claim.pubkey_hex).await {
-                let event = ReadmeEvent::Navigation(NavigationMessage::Failed {
+                let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Failed {
                     message: err.to_string(),
-                });
+                }));
                 let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
                 return;
             }
 
-            let fetch_request = FetchRequest {
-                fetch_url: Url::parse(&format!("http://{}", claim.socket_addr))
-                    .expect("valid socket"),
-                display_url,
+            let fetch_request = match crate::navigation::claim_fetch_request_with_path(
+                &claim,
+                display_url.clone(),
+                &name,
+                state.prompt.preferred_path.as_deref(),
+            ) {
+                Ok(request) => request,
+                Err(err) => {
+                    let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Failed {
+                        message: err.to_string(),
+                    }));
+                    let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
+                    return;
+                }
             };
 
-            match execute_fetch(&fetch_request, net_provider).await {
-                Ok(document) => {
-                    let event = ReadmeEvent::Navigation(NavigationMessage::Completed {
-                        document,
-                        prompt: None,
-                        retain_scroll: false,
-                    });
-                    let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
-                }
-                Err(err) => {
-                    let event = ReadmeEvent::Navigation(NavigationMessage::Failed {
-                        message: err.to_string(),
-                    });
-                    let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
-                }
-            }
+            run_fetch_task(fetch_request, net_provider, blossom, proxy, false).await;
         });
     }
 
@@ -277,6 +265,62 @@ impl ReadmeApplication {
         }
     }
 
+    fn try_navigate_blossom(&mut self, url: &Url, retain_scroll: bool) -> bool {
+        if url.scheme() != "blossom" {
+            return false;
+        }
+
+        let Some(document) = &self.current_document else {
+            return false;
+        };
+        let Some(context) = &document.blossom else {
+            return false;
+        };
+
+        if let Some(host) = url.host_str() {
+            if !host.is_empty() && host != context.pubkey_hex {
+                return false;
+            }
+        }
+
+        let mut path = url.path().to_string();
+        if path.is_empty() {
+            path = "/".to_string();
+        }
+
+        let fetch_request = FetchRequest {
+            source: FetchSource::Blossom(BlossomFetchRequest {
+                name: context.name.clone(),
+                pubkey_hex: context.pubkey_hex.clone(),
+                root_hash: context.root_hash.clone(),
+                servers: context.servers.clone(),
+                relays: context.relays.clone(),
+                path: path.clone(),
+            }),
+            display_url: blossom_display_label(&context.name, &path),
+        };
+
+        let previous = self.current_input.clone();
+        if previous != fetch_request.display_url {
+            self.url_history.push(previous);
+        }
+        self.current_input = fetch_request.display_url.clone();
+
+        let net_provider = Arc::clone(&self.net_provider);
+        let blossom = Arc::clone(&self.blossom);
+        let proxy = self.inner.proxy.clone();
+
+        self.handle.spawn(run_fetch_task(
+            fetch_request,
+            net_provider,
+            blossom,
+            proxy,
+            retain_scroll,
+        ));
+
+        true
+    }
+
     fn handle_navigation_message(&mut self, message: NavigationMessage) {
         match message {
             NavigationMessage::Completed {
@@ -284,7 +328,7 @@ impl ReadmeApplication {
                 prompt,
                 retain_scroll,
             } => {
-                self.set_document(document);
+                self.set_document(*document);
                 self.set_selection_prompt(prompt);
                 self.render_current_document(retain_scroll);
             }
@@ -293,7 +337,7 @@ impl ReadmeApplication {
                 retain_scroll,
             } => {
                 self.current_input = prompt.display_url.clone();
-                self.set_selection_prompt(Some(prompt));
+                self.set_selection_prompt(Some(*prompt));
                 self.render_current_document(retain_scroll);
             }
             NavigationMessage::Failed { message } => {
@@ -312,6 +356,7 @@ impl ReadmeApplication {
             contents: html,
             file_path: None,
             display_url: self.current_input.clone(),
+            blossom: None,
         };
         self.set_document(document);
         self.selection_overlay = None;
@@ -328,9 +373,15 @@ impl ReadmeApplication {
     }
 
     fn navigate(&mut self, options: NavigationOptions) {
-        let url_str = options.url.to_string();
+        let url = options.url.clone();
+
+        if self.try_navigate_blossom(&url, false) {
+            return;
+        }
+
+        let url_str = url.to_string();
         let target = if url_str.contains("?url=") {
-            if let Some(query) = options.url.query() {
+            if let Some(query) = url.query() {
                 ::url::form_urlencoded::parse(query.as_bytes())
                     .find(|(key, _)| key == "url")
                     .map(|(_, value)| value.into_owned())
@@ -431,7 +482,7 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                     match event {
                         ReadmeEvent::Refresh => self.reload_document(true),
                         ReadmeEvent::Navigation(message) => {
-                            self.handle_navigation_message(message.clone())
+                            self.handle_navigation_message((**message).clone())
                         }
                     }
                 }
@@ -467,9 +518,10 @@ fn render_selection_overlay(state: &SelectionOverlayState) -> String {
             .as_ref()
             .map(|note| format!("<span class=\"overlay-note\">{}</span>", encode_text(note)))
             .unwrap_or_default();
+        let location_raw = describe_claim_location(claim);
+        let location = encode_text(&location_raw);
         rows.push_str(&format!(
-            "<li class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" tabindex=\"0\">\n                <div class=\"overlay-line\">\n                    <span class=\"overlay-ip\">{ip}</span>\n                    <span class=\"overlay-pubkey\">{pubkey}</span>\n                </div>\n                <div class=\"overlay-meta\">Published {published} · {relay_count} relay(s)</div>\n                {note}\n            </li>",
-            ip = encode_text(&claim.socket_addr.to_string())
+            "<li class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" tabindex=\"0\">\n                <div class=\"overlay-line\">\n                    <span class=\"overlay-ip\">{location}</span>\n                    <span class=\"overlay-pubkey\">{pubkey}</span>\n                </div>\n                <div class=\"overlay-meta\">Published {published} · {relay_count} relay(s)</div>\n                {note}\n            </li>"
         ));
     }
 
@@ -484,6 +536,20 @@ fn render_selection_overlay(state: &SelectionOverlayState) -> String {
         name = encode_text(&state.prompt.name),
         status = encode_text(status)
     )
+}
+
+fn describe_claim_location(claim: &NnsClaim) -> String {
+    match &claim.location {
+        ClaimLocation::DirectIp(addr) => addr.to_string(),
+        ClaimLocation::Blossom { root_hash, .. } => {
+            if root_hash.len() > 12 {
+                let prefix = &root_hash[..12];
+                format!("blossom:{prefix}…")
+            } else {
+                format!("blossom:{root_hash}")
+            }
+        }
+    }
 }
 
 fn human_time(delta: i64) -> String {
@@ -501,6 +567,43 @@ fn human_time(delta: i64) -> String {
         format!("{minutes}m ago")
     } else {
         format!("{delta}s ago")
+    }
+}
+
+async fn run_fetch_task(
+    request: FetchRequest,
+    net_provider: Arc<Provider<Resource>>,
+    blossom: Arc<BlossomFetcher>,
+    proxy: EventLoopProxy<BlitzShellEvent>,
+    retain_scroll: bool,
+) {
+    match execute_fetch(&request, net_provider, blossom).await {
+        Ok(document) => {
+            let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Completed {
+                document: Box::new(document),
+                prompt: None,
+                retain_scroll,
+            }));
+            let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
+        }
+        Err(err) => {
+            let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Failed {
+                message: err.to_string(),
+            }));
+            let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
+        }
+    }
+}
+
+fn blossom_display_label(name: &str, path: &str) -> String {
+    if path.is_empty() || path == "/" {
+        return name.to_string();
+    }
+
+    if path.starts_with('/') {
+        format!("{name}{path}")
+    } else {
+        format!("{name}/{path}")
     }
 }
 

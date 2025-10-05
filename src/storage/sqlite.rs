@@ -30,6 +30,7 @@ pub struct ClaimRecord {
     pub created_at: i64,
     pub fetched_at: i64,
     pub event_id: String,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,8 +96,8 @@ impl Storage {
         let conn = self.pool.get()?;
         let relays_json = serde_json::to_value(&claim.relays)?;
         conn.execute(
-            "INSERT OR REPLACE INTO claims (name, pubkey, ip, relays, created_at, fetched_at, event_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO claims (name, pubkey, ip, relays, created_at, fetched_at, event_id, location)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 claim.name,
                 claim.pubkey,
@@ -105,6 +106,7 @@ impl Storage {
                 claim.created_at,
                 claim.fetched_at,
                 claim.event_id,
+                claim.location.as_deref(),
             ],
         )?;
         Ok(())
@@ -113,7 +115,7 @@ impl Storage {
     pub fn cached_claims(&self, name: &str) -> Result<Vec<ClaimRecord>, StorageError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT name, pubkey, ip, relays, created_at, fetched_at, event_id FROM claims WHERE name = ?1",
+            "SELECT name, pubkey, ip, relays, created_at, fetched_at, event_id, location FROM claims WHERE name = ?1",
         )?;
         let mut rows = stmt.query([name])?;
         let mut claims = Vec::new();
@@ -132,6 +134,7 @@ impl Storage {
                 created_at: row.get(4)?,
                 fetched_at: row.get(5)?,
                 event_id: row.get(6)?,
+                location: row.get::<_, Option<String>>(7)?,
             });
         }
         Ok(claims)
@@ -203,6 +206,26 @@ fn initialise_schema(conn: &Connection) -> Result<(), StorageError> {
         );
         "#,
     )?;
+    ensure_claim_location_column(conn)?;
+    Ok(())
+}
+
+fn ensure_claim_location_column(conn: &Connection) -> Result<(), StorageError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(claims)")?;
+    let mut rows = stmt.query([])?;
+    let mut has_location = false;
+    while let Some(row) = rows.next()? {
+        let column_name: String = row.get(1)?;
+        if column_name == "location" {
+            has_location = true;
+            break;
+        }
+    }
+
+    if !has_location {
+        conn.execute("ALTER TABLE claims ADD COLUMN location TEXT", [])?;
+    }
+
     Ok(())
 }
 
@@ -244,6 +267,7 @@ mod tests {
             created_at: 1,
             fetched_at: 2,
             event_id: "1".into(),
+            location: None,
         };
         storage.save_claim(&claim).unwrap();
         let claims = storage.cached_claims("test").unwrap();

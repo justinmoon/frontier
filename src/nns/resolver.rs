@@ -8,7 +8,7 @@ use thiserror::Error;
 use tokio::task::{self, JoinError};
 
 use crate::net::{NostrClient, NostrClientError, RelayDirectory};
-use crate::nns::models::{ModelError, NnsClaim, ResolvedClaims};
+use crate::nns::models::{ClaimLocation, ModelError, NnsClaim, ResolvedClaims};
 use crate::nns::scoring::score_claim;
 use crate::storage::{unix_timestamp, ClaimRecord, SelectionRecord, Storage, StorageError};
 
@@ -185,14 +185,28 @@ impl NnsResolver {
             .filter_map(|relay| url::Url::parse(relay).ok())
             .collect();
 
-        let socket_addr: SocketAddr = match record.ip.parse() {
-            Ok(addr) => addr,
-            Err(_) => return Ok(None),
+        let location = if let Some(raw) = record.location.as_ref() {
+            match serde_json::from_str::<ClaimLocation>(raw) {
+                Ok(location) => location,
+                Err(err) => {
+                    tracing::warn!(
+                        name = %record.name,
+                        error = %err,
+                        "failed to parse cached location"
+                    );
+                    return Ok(None);
+                }
+            }
+        } else {
+            match record.ip.parse::<SocketAddr>() {
+                Ok(addr) => ClaimLocation::DirectIp(addr),
+                Err(_) => return Ok(None),
+            }
         };
 
         Ok(Some(NnsClaim {
             name: record.name.clone(),
-            socket_addr,
+            location,
             pubkey_hex: record.pubkey.clone(),
             pubkey_npub,
             created_at,
@@ -256,11 +270,17 @@ impl NnsResolver {
             .map(|claim| ClaimRecord {
                 name: name.clone(),
                 pubkey: claim.pubkey_hex.clone(),
-                ip: claim.socket_addr.to_string(),
+                ip: match &claim.location {
+                    ClaimLocation::DirectIp(addr) => addr.to_string(),
+                    ClaimLocation::Blossom { root_hash, .. } => root_hash.clone(),
+                },
                 relays: claim.relays.iter().map(|url| url.to_string()).collect(),
                 created_at: claim.created_at.as_u64() as i64,
                 fetched_at: now,
                 event_id: claim.event_id.to_hex(),
+                location: Some(
+                    serde_json::to_string(&claim.location).expect("claim location serializable"),
+                ),
             })
             .collect();
 

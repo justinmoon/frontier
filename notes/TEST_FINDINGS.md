@@ -134,3 +134,7 @@ let route_to_chrome = logical_pos.y < CHROME_HEIGHT || self.chrome_overlay_activ
 2. If broken: Implement explicit overlay state tracking
 3. Consider profiling Scene/HashMap allocations if battery life becomes issue
 4. Monitor first-frame performance - may improve with blitz updates
+
+## Blossom Manifest Verification Follow-up
+- Blossom integration currently trusts that the `blossom` tag's root hash corresponds to one of the manifest entries published in kind 34128 events.
+- Future hardening: fetch the blob for `root_hash` and verify it maps to the active manifest (or ensure `/` entry matches the root hash), so that tampered manifests are rejected even if relays misbehave.

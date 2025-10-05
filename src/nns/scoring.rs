@@ -24,7 +24,7 @@ pub fn score_claim(claim: &NnsClaim, selected_pubkey: Option<&str>, now: i64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nns::NnsClaim;
+    use crate::nns::{ClaimLocation, NnsClaim};
     use ::url::Url;
     use nostr_sdk::prelude::*;
     use std::collections::HashSet;
@@ -37,7 +37,7 @@ mod tests {
         }
         NnsClaim {
             name: "test".into(),
-            socket_addr: "127.0.0.1:8080".parse::<SocketAddr>().unwrap(),
+            location: ClaimLocation::DirectIp("127.0.0.1:8080".parse::<SocketAddr>().unwrap()),
             pubkey_hex: "deadbeef".into(),
             pubkey_npub: "npub1deadbeef".into(),
             created_at: Timestamp::from(created_at as u64),

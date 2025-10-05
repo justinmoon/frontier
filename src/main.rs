@@ -1,3 +1,4 @@
+mod blossom;
 mod input;
 mod navigation;
 mod net;
@@ -17,6 +18,7 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher as _};
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
+use crate::blossom::BlossomFetcher;
 use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
 use crate::net::{NostrClient, RelayDirectory};
 use crate::nns::NnsResolver;
@@ -76,11 +78,19 @@ fn main() {
         eprintln!("Failed to load relay configuration: {err}. Using defaults.");
         RelayDirectory::load(None).expect("default relays")
     });
+    let resolver_directory = relay_directory.clone();
+    let blossom_directory = relay_directory.clone();
     let resolver = Arc::new(NnsResolver::new(
         Arc::clone(&storage),
-        relay_directory,
+        resolver_directory,
         NostrClient::new(),
     ));
+    let blossom = Arc::new(
+        BlossomFetcher::new(blossom_directory).unwrap_or_else(|err| {
+            eprintln!("Failed to initialise Blossom fetcher: {err}");
+            std::process::exit(1);
+        }),
+    );
 
     let event_loop = create_default_event_loop();
     let proxy = event_loop.create_proxy();
@@ -98,7 +108,11 @@ fn main() {
     let (initial_document, initial_prompt) = match initial_plan {
         NavigationPlan::Fetch(request) => {
             let document = rt
-                .block_on(execute_fetch(&request, Arc::clone(&net_provider)))
+                .block_on(execute_fetch(
+                    &request,
+                    Arc::clone(&net_provider),
+                    Arc::clone(&blossom),
+                ))
                 .unwrap_or_else(|err| {
                     eprintln!("Failed to load initial document: {err}");
                     std::process::exit(1);
@@ -111,6 +125,7 @@ fn main() {
                 contents: "<p>Waiting for NNS selection…</p>".into(),
                 file_path: None,
                 display_url: prompt.display_url.clone(),
+                blossom: None,
             };
             (document, Some(prompt))
         }
@@ -128,6 +143,7 @@ fn main() {
         Arc::clone(&net_provider),
         Arc::clone(&navigation_provider),
         Arc::clone(&resolver),
+        Arc::clone(&blossom),
     );
 
     let html = application.prepare_initial_state(initial_document.clone(), initial_prompt.clone());

@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
-use frontier::{NnsResolver, NostrClient, RelayDirectory, Storage};
+use frontier::{nns::ClaimLocation, NnsResolver, NostrClient, RelayDirectory, Storage};
 
 // --- Test Infrastructure (reused from nns_e2e_test.rs) ---
 
@@ -135,7 +135,10 @@ async fn test_multiple_claims_requires_selection() {
     // Verify both IPs are present (one as primary, one as alternate)
     let all_ips: Vec<String> = std::iter::once(&output.claims.primary)
         .chain(output.claims.alternates.iter())
-        .map(|claim| claim.socket_addr.to_string())
+        .filter_map(|claim| match &claim.location {
+            ClaimLocation::DirectIp(addr) => Some(addr.to_string()),
+            ClaimLocation::Blossom { .. } => None,
+        })
         .collect();
 
     assert!(
@@ -207,10 +210,11 @@ async fn test_malformed_events_are_skipped() {
         .resolve("goodsite")
         .await
         .expect("should resolve valid event");
-    assert_eq!(
-        output.claims.primary.socket_addr.to_string(),
-        "192.168.1.100:8080"
-    );
+    let primary_addr = match output.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => addr,
+        ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+    };
+    assert_eq!(primary_addr.to_string(), "192.168.1.100:8080");
 
     // badsite should fail (no valid events)
     let bad_result = resolver.resolve("badsite").await;
@@ -276,10 +280,15 @@ async fn test_cache_behavior() {
     assert!(output2.from_cache, "second resolution should be from cache");
 
     // Both should return same IP
-    assert_eq!(
-        output1.claims.primary.socket_addr,
-        output2.claims.primary.socket_addr
-    );
+    let addr1 = match output1.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => addr,
+        ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+    };
+    let addr2 = match output2.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => addr,
+        ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+    };
+    assert_eq!(addr1, addr2);
 
     let _ = relay_server.shutdown.send(());
     let _ = relay_server.handle.await;
