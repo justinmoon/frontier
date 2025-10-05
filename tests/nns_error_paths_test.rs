@@ -42,7 +42,7 @@ async fn start_mock_relay(events: Vec<Event>) -> RelayServer {
             while let Some(msg) = ws.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                        if let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) {
                             if value.get(0) == Some(&Value::String("REQ".into())) {
                                 if let Some(id) = value.get(1).and_then(|v| v.as_str()) {
                                     sub_id = Some(id.to_string());
@@ -63,11 +63,15 @@ async fn start_mock_relay(events: Vec<Event>) -> RelayServer {
                 for event in events {
                     let event_value = serde_json::to_value(&event).unwrap();
                     let event_msg = json!(["EVENT", id, event_value]);
-                    ws.send(Message::Text(event_msg.to_string())).await.unwrap();
+                    ws.send(Message::Text(event_msg.to_string().into()))
+                        .await
+                        .unwrap();
                 }
 
                 let eose_msg = json!(["EOSE", id]);
-                ws.send(Message::Text(eose_msg.to_string())).await.unwrap();
+                ws.send(Message::Text(eose_msg.to_string().into()))
+                    .await
+                    .unwrap();
             }
 
             let _ = shutdown_rx.await;
@@ -138,6 +142,7 @@ async fn test_multiple_claims_requires_selection() {
         .filter_map(|claim| match &claim.location {
             ClaimLocation::DirectIp(addr) => Some(addr.to_string()),
             ClaimLocation::Blossom { .. } => None,
+            ClaimLocation::LegacyUrl(url) => Some(url.to_string()),
         })
         .collect();
 
@@ -213,6 +218,7 @@ async fn test_malformed_events_are_skipped() {
     let primary_addr = match output.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     assert_eq!(primary_addr.to_string(), "192.168.1.100:8080");
 
@@ -283,10 +289,12 @@ async fn test_cache_behavior() {
     let addr1 = match output1.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     let addr2 = match output2.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     assert_eq!(addr1, addr2);
 

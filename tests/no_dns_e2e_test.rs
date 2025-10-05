@@ -9,7 +9,11 @@
 /// NO DNS lookups anywhere. Everything TLS-encrypted.
 ///
 /// Run: cargo test --test no_dns_e2e_test
-use frontier::{nns::ClaimLocation, NnsResolver, NostrClient, RelayDirectory, Storage};
+use frontier::{
+    nns::{ClaimLocation, PublishedTlsKey, TlsAlgorithm},
+    tls::connect_websocket,
+    NnsResolver, NostrClient, RelayDirectory, Storage,
+};
 use futures_util::{SinkExt, StreamExt};
 use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, Tag, Timestamp};
 use rustls::{
@@ -28,6 +32,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
+use url::Url;
 
 #[tokio::test]
 async fn test_no_dns_full_stack() {
@@ -71,6 +76,7 @@ async fn test_no_dns_full_stack() {
         &http_tls.pubkey_hex,
         None,
         None,
+        "site",
         &http_keys,
     );
     let blossom_event = build_service_event(
@@ -79,6 +85,7 @@ async fn test_no_dns_full_stack() {
         &blossom_tls.pubkey_hex,
         Some(&blossom_server.root_hash),
         Some(&format!("https://{}", blossom_server.addr)),
+        "blossom-site",
         &blossom_keys,
     );
     let relay_event = build_service_event(
@@ -87,6 +94,7 @@ async fn test_no_dns_full_stack() {
         &relay_tls.pubkey_hex,
         None,
         None,
+        "relay",
         &relay_keys,
     );
 
@@ -137,25 +145,18 @@ async fn test_no_dns_full_stack() {
     println!("TEST 1: Direct HTTPS Site (NO DNS)");
     println!("-----------------------------------");
     let output = resolver.resolve("mywebsite").await.expect("resolve failed");
-    let (http_ip, http_tls_pubkey) = match &output.claims.primary.location {
-        ClaimLocation::DirectIp(addr) => (
-            *addr,
-            output
-                .claims
-                .primary
-                .tls_pubkey
-                .as_ref()
-                .expect("tls pubkey"),
-        ),
+    let http_ip = match &output.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => *addr,
         _ => panic!("expected DirectIp"),
     };
+    let http_tls_pubkey = output.claims.primary.tls_spki_hex().expect("tls pubkey");
     assert_eq!(http_ip, http_server.addr);
-    assert_eq!(http_tls_pubkey, &http_tls.pubkey_hex);
+    assert_eq!(http_tls_pubkey, http_tls.pubkey_hex);
     println!("✓ Resolved mywebsite → https://{}", http_ip);
     println!("✓ TLS pubkey verified from NNS event");
 
     // Fetch with custom TLS verification
-    let http_content = fetch_with_tls(&http_ip, http_tls_pubkey).await;
+    let http_content = fetch_with_tls(&http_ip, &http_tls_pubkey).await;
     assert!(http_content.contains("<h1>Direct HTTPS Site</h1>"));
     println!("✓ Fetched content over TLS (NO DNS)\n");
 
@@ -175,27 +176,16 @@ async fn test_no_dns_full_stack() {
         .resolve("myblossomsite")
         .await
         .expect("resolve blossom failed");
-    let (blossom_ip, blossom_tls_pubkey, root_hash, _blossom_servers) =
-        match &output.claims.primary.location {
-            ClaimLocation::Blossom { root_hash, servers } => {
-                // Extract IP from servers (but we'll use direct IP from event)
-                (
-                    blossom_server.addr,
-                    output
-                        .claims
-                        .primary
-                        .tls_pubkey
-                        .as_ref()
-                        .expect("tls pubkey"),
-                    root_hash.clone(),
-                    servers.clone(),
-                )
-            }
-            _ => panic!("expected Blossom"),
-        };
+    let (blossom_ip, root_hash, _blossom_servers) = match &output.claims.primary.location {
+        ClaimLocation::Blossom { root_hash, servers } => {
+            (blossom_server.addr, root_hash.clone(), servers.clone())
+        }
+        _ => panic!("expected Blossom"),
+    };
+    let blossom_tls_pubkey = output.claims.primary.tls_spki_hex().expect("tls pubkey");
 
     assert_eq!(blossom_ip, blossom_server.addr);
-    assert_eq!(blossom_tls_pubkey, &blossom_tls.pubkey_hex);
+    assert_eq!(blossom_tls_pubkey, blossom_tls.pubkey_hex);
     println!("✓ Resolved myblossomsite → https://{}", blossom_ip);
     println!("✓ TLS pubkey verified from NNS event");
     println!("✓ Blossom root hash: {}", &root_hash[..16]);
@@ -203,7 +193,7 @@ async fn test_no_dns_full_stack() {
     // Fetch Blossom blob with TLS verification
     let index_hash = &blossom_server.files[0].1;
     let url = format!("https://{}/{}", blossom_ip, index_hash);
-    let blossom_content = fetch_with_tls_url(&url, blossom_tls_pubkey).await;
+    let blossom_content = fetch_with_tls_url(&url, &blossom_tls_pubkey).await;
     assert!(blossom_content.contains("<h1>Blossom Site</h1>"));
     println!("✓ Fetched Blossom content over TLS (NO DNS)");
     println!("✓ Content hash verified: {}", &index_hash[..16]);
@@ -225,27 +215,30 @@ async fn test_no_dns_full_stack() {
         .resolve("myrelay")
         .await
         .expect("resolve relay failed");
-    let (relay_ip, relay_tls_pubkey) = match &output.claims.primary.location {
-        ClaimLocation::DirectIp(addr) => (
-            *addr,
-            output
-                .claims
-                .primary
-                .tls_pubkey
-                .as_ref()
-                .expect("tls pubkey"),
-        ),
+    let relay_ip = match &output.claims.primary.location {
+        ClaimLocation::DirectIp(addr) => *addr,
         _ => panic!("expected DirectIp"),
     };
+    let relay_tls_pubkey = output.claims.primary.tls_spki_hex().expect("tls pubkey");
 
     assert_eq!(relay_ip, relay_server.addr);
-    assert_eq!(relay_tls_pubkey, &relay_tls.pubkey_hex);
+    assert_eq!(relay_tls_pubkey, relay_tls.pubkey_hex);
     println!("✓ Resolved myrelay → wss://{}", relay_ip);
     println!("✓ TLS pubkey verified from NNS event");
 
     // Actually connect to the relay with TLS to prove it works
     println!("✓ Relay TLS info retrieved - ready for WebSocket connection");
-    println!("✓ Would use custom TLS verification for wss:// connection (NO DNS)");
+    let relay_tls_key =
+        PublishedTlsKey::new(TlsAlgorithm::Ed25519, &relay_tls_pubkey).expect("relay tls key");
+    let relay_url = Url::parse(&format!("wss://{}", relay_ip)).expect("relay url");
+    let mut relay_socket = connect_websocket(&relay_url, Some(&relay_tls_key))
+        .await
+        .expect("connect relay websocket");
+    relay_socket
+        .close(None)
+        .await
+        .expect("close relay websocket");
+    println!("✓ Established pinned TLS WebSocket to relay (NO DNS)");
     println!();
 
     // Cleanup
@@ -500,17 +493,17 @@ async fn start_discovery_relay(events: Vec<Event>) -> DiscoveryRelay {
                                 while let Some(msg) = ws.next().await {
                                     match msg {
                                         Ok(Message::Text(text)) => {
-                                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                            if let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) {
                                                 if value.get(0) == Some(&Value::String("REQ".into())) {
                                                     if let Some(id) = value.get(1).and_then(|v| v.as_str()) {
                                                         // Send all events for this subscription
                                                         for event in &events_clone {
                                                             let event_value = serde_json::to_value(event).unwrap();
                                                             let event_msg = json!(["EVENT", id, event_value]);
-                                                            let _ = ws.send(Message::Text(event_msg.to_string())).await;
+                                                            let _ = ws.send(Message::Text(event_msg.to_string().into())).await;
                                                         }
                                                         let eose_msg = json!(["EOSE", id]);
-                                                        let _ = ws.send(Message::Text(eose_msg.to_string())).await;
+                                                        let _ = ws.send(Message::Text(eose_msg.to_string().into())).await;
                                                     }
                                                 }
                                             }
@@ -546,6 +539,7 @@ fn build_service_event(
     tls_pubkey: &str,
     blossom_hash: Option<&str>,
     server_url: Option<&str>,
+    svc_kind: &str,
     keys: &Keys,
 ) -> Event {
     let socket = format!("{}:{}", addr.ip(), addr.port());
@@ -555,7 +549,14 @@ fn build_service_event(
         Tag::parse(&["ip", &socket]).unwrap(),
         Tag::parse(&["tls-pubkey", tls_pubkey]).unwrap(),
         Tag::parse(&["tls-alg", "ed25519"]).unwrap(),
+        Tag::parse(&["svc", svc_kind]).unwrap(),
     ];
+
+    let endpoint_transport = match svc_kind {
+        "relay" => "wss",
+        _ => "https",
+    };
+    tags.push(Tag::parse(&["endpoint", endpoint_transport, &socket, "0"]).unwrap());
 
     if let Some(hash) = blossom_hash {
         tags.push(Tag::parse(&["blossom", hash]).unwrap());
@@ -600,20 +601,30 @@ async fn fetch_with_tls(addr: &SocketAddr, expected_pubkey: &str) -> String {
 }
 
 async fn fetch_with_tls_url(url: &str, expected_pubkey: &str) -> String {
-    use frontier::net::NostrCertVerifier;
-    use rustls::ClientConfig;
+    use frontier::nns::{PublishedTlsKey, TlsAlgorithm};
+    use frontier::tls::SecureHttpClient;
 
-    let verifier = Arc::new(NostrCertVerifier::new(expected_pubkey.to_string()));
-    let config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+    let tls_key = PublishedTlsKey::new(TlsAlgorithm::Ed25519, expected_pubkey).unwrap();
+    let client = SecureHttpClient::new(Some(&tls_key))
+        .unwrap()
+        .client()
+        .clone();
 
-    let client = reqwest::Client::builder()
-        .use_preconfigured_tls(config)
-        .build()
-        .unwrap();
+    let mut last_err = None;
+    for attempt in 0..3 {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let ok = response.error_for_status().unwrap();
+                return ok.text().await.unwrap();
+            }
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < 2 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
 
-    let response = client.get(url).send().await.unwrap();
-    response.text().await.unwrap()
+    panic!("failed to fetch {url}: {last_err:?}");
 }

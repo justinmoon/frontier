@@ -37,15 +37,16 @@ mod tests {
         }
         NnsClaim {
             name: "test".into(),
+            service_kind: None,
             location: ClaimLocation::DirectIp("127.0.0.1:8080".parse::<SocketAddr>().unwrap()),
+            endpoints: Vec::new(),
             pubkey_hex: "deadbeef".into(),
             pubkey_npub: "npub1deadbeef".into(),
             created_at: Timestamp::from(created_at as u64),
             relays: relay_set,
             note: None,
             event_id: EventId::from_hex("f".repeat(64)).unwrap(),
-            tls_pubkey: None,
-            tls_alg: None,
+            tls_key: None,
         }
     }
 

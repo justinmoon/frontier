@@ -31,6 +31,12 @@ pub struct ClaimRecord {
     pub fetched_at: i64,
     pub event_id: String,
     pub location: Option<String>,
+    pub endpoints: Option<String>,
+    pub service_kind: Option<String>,
+    pub tls_pubkey: Option<String>,
+    pub tls_alg: Option<String>,
+    pub blossom_root: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,8 +102,23 @@ impl Storage {
         let conn = self.pool.get()?;
         let relays_json = serde_json::to_value(&claim.relays)?;
         conn.execute(
-            "INSERT OR REPLACE INTO claims (name, pubkey, ip, relays, created_at, fetched_at, event_id, location)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO claims (
+                name,
+                pubkey,
+                ip,
+                relays,
+                created_at,
+                fetched_at,
+                event_id,
+                location,
+                endpoints,
+                service_kind,
+                tls_pubkey,
+                tls_alg,
+                blossom_root,
+                note
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 claim.name,
                 claim.pubkey,
@@ -107,6 +128,12 @@ impl Storage {
                 claim.fetched_at,
                 claim.event_id,
                 claim.location.as_deref(),
+                claim.endpoints.as_deref(),
+                claim.service_kind.as_deref(),
+                claim.tls_pubkey.as_deref(),
+                claim.tls_alg.as_deref(),
+                claim.blossom_root.as_deref(),
+                claim.note.as_deref(),
             ],
         )?;
         Ok(())
@@ -115,7 +142,22 @@ impl Storage {
     pub fn cached_claims(&self, name: &str) -> Result<Vec<ClaimRecord>, StorageError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT name, pubkey, ip, relays, created_at, fetched_at, event_id, location FROM claims WHERE name = ?1",
+            "SELECT
+                name,
+                pubkey,
+                ip,
+                relays,
+                created_at,
+                fetched_at,
+                event_id,
+                location,
+                endpoints,
+                service_kind,
+                tls_pubkey,
+                tls_alg,
+                blossom_root,
+                note
+            FROM claims WHERE name = ?1",
         )?;
         let mut rows = stmt.query([name])?;
         let mut claims = Vec::new();
@@ -135,6 +177,12 @@ impl Storage {
                 fetched_at: row.get(5)?,
                 event_id: row.get(6)?,
                 location: row.get::<_, Option<String>>(7)?,
+                endpoints: row.get::<_, Option<String>>(8)?,
+                service_kind: row.get::<_, Option<String>>(9)?,
+                tls_pubkey: row.get::<_, Option<String>>(10)?,
+                tls_alg: row.get::<_, Option<String>>(11)?,
+                blossom_root: row.get::<_, Option<String>>(12)?,
+                note: row.get::<_, Option<String>>(13)?,
             });
         }
         Ok(claims)
@@ -197,6 +245,13 @@ fn initialise_schema(conn: &Connection) -> Result<(), StorageError> {
             created_at INTEGER NOT NULL,
             fetched_at INTEGER NOT NULL,
             event_id TEXT NOT NULL,
+            location TEXT,
+            endpoints TEXT,
+            service_kind TEXT,
+            tls_pubkey TEXT,
+            tls_alg TEXT,
+            blossom_root TEXT,
+            note TEXT,
             PRIMARY KEY (name, pubkey)
         );
         CREATE TABLE IF NOT EXISTS selections (
@@ -206,24 +261,31 @@ fn initialise_schema(conn: &Connection) -> Result<(), StorageError> {
         );
         "#,
     )?;
-    ensure_claim_location_column(conn)?;
+    ensure_claim_column(conn, "location", "TEXT")?;
+    ensure_claim_column(conn, "endpoints", "TEXT")?;
+    ensure_claim_column(conn, "service_kind", "TEXT")?;
+    ensure_claim_column(conn, "tls_pubkey", "TEXT")?;
+    ensure_claim_column(conn, "tls_alg", "TEXT")?;
+    ensure_claim_column(conn, "blossom_root", "TEXT")?;
+    ensure_claim_column(conn, "note", "TEXT")?;
     Ok(())
 }
 
-fn ensure_claim_location_column(conn: &Connection) -> Result<(), StorageError> {
+fn ensure_claim_column(conn: &Connection, column: &str, ty: &str) -> Result<(), StorageError> {
     let mut stmt = conn.prepare("PRAGMA table_info(claims)")?;
     let mut rows = stmt.query([])?;
-    let mut has_location = false;
+    let mut has_column = false;
     while let Some(row) = rows.next()? {
         let column_name: String = row.get(1)?;
-        if column_name == "location" {
-            has_location = true;
+        if column_name == column {
+            has_column = true;
             break;
         }
     }
 
-    if !has_location {
-        conn.execute("ALTER TABLE claims ADD COLUMN location TEXT", [])?;
+    if !has_column {
+        let sql = format!("ALTER TABLE claims ADD COLUMN {column} {ty}");
+        conn.execute(sql.as_str(), [])?;
     }
 
     Ok(())
@@ -268,6 +330,12 @@ mod tests {
             fetched_at: 2,
             event_id: "1".into(),
             location: None,
+            endpoints: None,
+            service_kind: None,
+            tls_pubkey: None,
+            tls_alg: None,
+            blossom_root: None,
+            note: None,
         };
         storage.save_claim(&claim).unwrap();
         let claims = storage.cached_claims("test").unwrap();

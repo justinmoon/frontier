@@ -6,14 +6,16 @@ use ::url::Url;
 use blitz_dom::net::Resource;
 use blitz_net::Provider;
 use blitz_traits::net::Request;
-use rustls::ClientConfig;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
 use crate::blossom::{BlossomError, BlossomFetcher};
 use crate::input::{parse_input, ParseInputError, ParsedInput};
-use crate::net::NostrCertVerifier;
-use crate::nns::{ClaimLocation, NnsClaim, NnsResolver, ResolverError, ResolverOutput};
+use crate::nns::{
+    ClaimLocation, NnsClaim, NnsResolver, PublishedTlsKey, ResolverError, ResolverOutput,
+    ServiceEndpoint, TransportKind,
+};
+use crate::tls::SecureHttpClient;
 
 pub(crate) const DEFAULT_BLOSSOM_PATHS: &[&str] = &["/index.html", "/index.htm", "/index", "/"];
 
@@ -25,11 +27,21 @@ pub struct FetchRequest {
 
 #[derive(Debug, Clone)]
 pub enum FetchSource {
-    Network {
-        url: Url,
-        tls_pubkey: Option<String>,
-    },
+    LegacyUrl(Url),
+    SecureHttp(SecureHttpRequest),
     Blossom(BlossomFetchRequest),
+}
+
+#[derive(Debug, Clone)]
+pub struct SecureHttpEndpoint {
+    pub url: Url,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct SecureHttpRequest {
+    pub endpoints: Vec<SecureHttpEndpoint>,
+    pub tls_key: Option<PublishedTlsKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +52,8 @@ pub struct BlossomFetchRequest {
     pub servers: Vec<Url>,
     pub relays: Vec<Url>,
     pub path: String,
-    pub tls_pubkey: Option<String>,
+    pub tls_key: Option<PublishedTlsKey>,
+    pub endpoints: Vec<ServiceEndpoint>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +88,8 @@ pub struct BlossomDocumentContext {
     pub root_hash: String,
     pub servers: Vec<Url>,
     pub relays: Vec<Url>,
+    pub tls_key: Option<PublishedTlsKey>,
+    pub endpoints: Vec<ServiceEndpoint>,
 }
 
 #[derive(Debug, Error)]
@@ -109,10 +124,7 @@ pub async fn prepare_navigation(
     match parsed {
         ParsedInput::Url(url) | ParsedInput::DirectIp(url) => {
             let request = FetchRequest {
-                source: FetchSource::Network {
-                    url,
-                    tls_pubkey: None,
-                },
+                source: FetchSource::LegacyUrl(url),
                 display_url: if trimmed.is_empty() {
                     String::from("about:blank")
                 } else {
@@ -159,44 +171,11 @@ pub async fn execute_fetch(
     blossom: Arc<BlossomFetcher>,
 ) -> Result<FetchedDocument, FetchError> {
     match &request.source {
-        FetchSource::Network { url, tls_pubkey } => {
-            if url.scheme() == "file" {
-                return fetch_file_url(url, &request.display_url);
-            }
-
-            // If TLS verification is required, use reqwest directly
-            if let Some(pubkey) = tls_pubkey {
-                return fetch_with_tls_verification(url, pubkey, &request.display_url).await;
-            }
-
-            let (tx, rx) = oneshot::channel();
-            let fetch_url = url.clone();
-
-            let req = Request::get(fetch_url.clone());
-            net_provider.fetch_with_callback(
-                req,
-                Box::new(move |result| match result {
-                    Ok((url, bytes)) => {
-                        tx.send(Ok((url, bytes))).ok();
-                    }
-                    Err(err) => {
-                        tx.send(Err(format!("{err:?}"))).ok();
-                    }
-                }),
-            );
-
-            let received = rx.await.map_err(|e| FetchError::Network(e.to_string()))?;
-            let (response_url, bytes) = received.map_err(FetchError::Network)?;
-
-            let contents = std::str::from_utf8(&bytes)?.to_string();
-
-            Ok(FetchedDocument {
-                base_url: response_url,
-                contents,
-                file_path: None,
-                display_url: request.display_url.clone(),
-                blossom: None,
-            })
+        FetchSource::LegacyUrl(url) => {
+            fetch_legacy_url(url, &request.display_url, net_provider).await
+        }
+        FetchSource::SecureHttp(http_request) => {
+            fetch_secure_http(http_request, &request.display_url).await
         }
         FetchSource::Blossom(blossom_request) => {
             fetch_blossom_document(blossom_request, &request.display_url, Arc::clone(&blossom))
@@ -205,46 +184,93 @@ pub async fn execute_fetch(
     }
 }
 
-async fn fetch_with_tls_verification(
+async fn fetch_legacy_url(
     url: &Url,
-    expected_pubkey: &str,
     display_url: &str,
+    net_provider: Arc<Provider<Resource>>,
 ) -> Result<FetchedDocument, FetchError> {
-    // Build custom TLS config with Nostr cert verifier
-    let verifier = Arc::new(NostrCertVerifier::new(expected_pubkey.to_string()));
-    let config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+    if url.scheme() == "file" {
+        return fetch_file_url(url, display_url);
+    }
 
-    // Build reqwest client with custom TLS
-    let client = reqwest::Client::builder()
-        .use_preconfigured_tls(config)
-        .build()
-        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let (tx, rx) = oneshot::channel();
+    let fetch_url = url.clone();
 
-    // Fetch the URL
-    let response = client
-        .get(url.as_str())
-        .send()
-        .await
-        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let req = Request::get(fetch_url);
+    net_provider.fetch_with_callback(
+        req,
+        Box::new(move |result| match result {
+            Ok((url, bytes)) => {
+                tx.send(Ok((url, bytes))).ok();
+            }
+            Err(err) => {
+                tx.send(Err(format!("{err:?}"))).ok();
+            }
+        }),
+    );
 
-    let final_url = response.url().to_string();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let received = rx.await.map_err(|e| FetchError::Network(e.to_string()))?;
+    let (response_url, bytes) = received.map_err(FetchError::Network)?;
 
     let contents = std::str::from_utf8(&bytes)?.to_string();
 
     Ok(FetchedDocument {
-        base_url: final_url,
+        base_url: response_url,
         contents,
         file_path: None,
         display_url: display_url.to_string(),
         blossom: None,
     })
+}
+
+async fn fetch_secure_http(
+    request: &SecureHttpRequest,
+    display_url: &str,
+) -> Result<FetchedDocument, FetchError> {
+    if request.endpoints.is_empty() {
+        return Err(FetchError::Network("no endpoints".to_string()));
+    }
+
+    let client = SecureHttpClient::new(request.tls_key.as_ref())
+        .map_err(|err| FetchError::Network(err.to_string()))?
+        .client()
+        .clone();
+
+    let mut last_error: Option<reqwest::Error> = None;
+
+    for endpoint in &request.endpoints {
+        match client.get(endpoint.url.clone()).send().await {
+            Ok(response) => match response.error_for_status() {
+                Ok(success) => {
+                    let final_url = success.url().to_string();
+                    let bytes = success
+                        .bytes()
+                        .await
+                        .map_err(|e| FetchError::Network(e.to_string()))?;
+                    let contents = std::str::from_utf8(&bytes)?.to_string();
+
+                    return Ok(FetchedDocument {
+                        base_url: final_url,
+                        contents,
+                        file_path: None,
+                        display_url: display_url.to_string(),
+                        blossom: None,
+                    });
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            },
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    let error = last_error
+        .map(|err| err.to_string())
+        .unwrap_or_else(|| "all endpoints failed".to_string());
+    Err(FetchError::Network(error))
 }
 
 fn fetch_file_url(url: &Url, display_url: &str) -> Result<FetchedDocument, FetchError> {
@@ -362,6 +388,41 @@ async fn build_selection(
     })
 }
 
+fn build_secure_http_request(claim: &NnsClaim) -> Result<SecureHttpRequest, NavigationError> {
+    let mut endpoints = Vec::new();
+    for endpoint in &claim.endpoints {
+        if matches!(endpoint.transport, TransportKind::Https) {
+            let url = Url::parse(&format!("https://{}", endpoint.socket_addr))
+                .map_err(|_| NavigationError::Unsupported)?;
+            endpoints.push(SecureHttpEndpoint {
+                url,
+                priority: endpoint.priority,
+            });
+        }
+    }
+
+    if endpoints.is_empty() {
+        let ClaimLocation::DirectIp(addr) = &claim.location else {
+            return Err(NavigationError::Unsupported);
+        };
+        let scheme = if claim.tls_key.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        let url =
+            Url::parse(&format!("{scheme}://{addr}")).map_err(|_| NavigationError::Unsupported)?;
+        endpoints.push(SecureHttpEndpoint { url, priority: 0 });
+    }
+
+    endpoints.sort_by(|a, b| a.priority.cmp(&b.priority));
+
+    Ok(SecureHttpRequest {
+        endpoints,
+        tls_key: claim.tls_key.clone(),
+    })
+}
+
 pub(crate) fn claim_fetch_request_with_path(
     claim: &NnsClaim,
     display_url: String,
@@ -369,19 +430,9 @@ pub(crate) fn claim_fetch_request_with_path(
     preferred_path: Option<&str>,
 ) -> Result<FetchRequest, NavigationError> {
     let source = match &claim.location {
-        ClaimLocation::DirectIp(addr) => {
-            // Use HTTPS if TLS pubkey is provided, otherwise fall back to HTTP
-            let scheme = if claim.tls_pubkey.is_some() {
-                "https"
-            } else {
-                "http"
-            };
-            let url = Url::parse(&format!("{}://{}", scheme, addr))
-                .map_err(|_| NavigationError::Unsupported)?;
-            FetchSource::Network {
-                url,
-                tls_pubkey: claim.tls_pubkey.clone(),
-            }
+        ClaimLocation::DirectIp(_) => {
+            let request = build_secure_http_request(claim)?;
+            FetchSource::SecureHttp(request)
         }
         ClaimLocation::Blossom { root_hash, servers } => {
             let servers = servers.clone();
@@ -396,8 +447,19 @@ pub(crate) fn claim_fetch_request_with_path(
                 servers,
                 relays,
                 path,
-                tls_pubkey: claim.tls_pubkey.clone(),
+                tls_key: claim.tls_key.clone(),
+                endpoints: claim.endpoints.clone(),
             })
+        }
+        ClaimLocation::LegacyUrl(url) => {
+            let url = if let Some(path) = preferred_path {
+                let normalized = normalize_http_path(path);
+                url.join(&normalized)
+                    .map_err(|_| NavigationError::Unsupported)?
+            } else {
+                url.clone()
+            };
+            FetchSource::LegacyUrl(url)
         }
     };
     Ok(FetchRequest {
@@ -431,11 +493,7 @@ async fn fetch_blossom_document(
         };
 
         match blossom
-            .fetch_blob_by_hash_with_tls(
-                &request.servers,
-                &entry.hash,
-                request.tls_pubkey.as_deref(),
-            )
+            .fetch_blob_by_hash_with_tls(&request.servers, &entry.hash, request.tls_key.as_ref())
             .await
         {
             Ok(bytes) => {
@@ -452,6 +510,8 @@ async fn fetch_blossom_document(
                     root_hash: request.root_hash.clone(),
                     servers: request.servers.clone(),
                     relays: request.relays.clone(),
+                    tls_key: request.tls_key.clone(),
+                    endpoints: request.endpoints.clone(),
                 };
                 return Ok(FetchedDocument {
                     base_url,
@@ -476,6 +536,17 @@ async fn fetch_blossom_document(
 }
 
 fn normalize_blossom_path(path: &str) -> String {
+    if path.trim().is_empty() {
+        return "/".to_string();
+    }
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{}", path)
+    }
+}
+
+fn normalize_http_path(path: &str) -> String {
     if path.trim().is_empty() {
         return "/".to_string();
     }

@@ -2,5 +2,9 @@ mod models;
 mod resolver;
 mod scoring;
 
-pub use models::{ClaimLocation, NnsClaim};
+#[allow(unused_imports)]
+pub use models::{
+    ClaimLocation, ModelError, NnsClaim, PublishedTlsKey, ResolvedClaims, ServiceEndpoint,
+    ServiceKind, TlsAlgorithm, TransportKind,
+};
 pub use resolver::{NnsResolver, ResolverError, ResolverOutput};

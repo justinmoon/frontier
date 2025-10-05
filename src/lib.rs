@@ -6,6 +6,7 @@ pub mod navigation;
 pub mod net;
 pub mod nns;
 pub mod storage;
+pub mod tls;
 
 // Re-export commonly used types for tests
 pub use net::{NostrClient, RelayDirectory};

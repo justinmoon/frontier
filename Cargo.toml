@@ -26,11 +26,11 @@ anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e026
 anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process"] }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 url = { version = "2", features = ["serde"] }
 winit = { version = "0.30" }
 image = { version = "0.25", default-features = false, optional = true }
@@ -59,11 +59,11 @@ hex = "0.4"
 [dev-dependencies]
 accesskit = "0.17"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "signal", "process"] }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 tokio-rustls = "0.26"
 ring = "0.17"
 rcgen = "0.13"

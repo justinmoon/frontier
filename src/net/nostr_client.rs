@@ -5,10 +5,15 @@ use ::url::Url;
 use nostr_sdk::prelude::*;
 use thiserror::Error;
 
+use crate::nns::PublishedTlsKey;
+use crate::tls::{connect_websocket, SecureTransportError, SecureWebSocketStream};
+
 #[derive(Debug, Error)]
 pub enum NostrClientError {
     #[error("nostr error: {0}")]
     Nostr(#[from] nostr_sdk::prelude::Error),
+    #[error("transport error: {0}")]
+    Transport(#[from] SecureTransportError),
 }
 
 #[derive(Debug, Clone)]
@@ -63,5 +68,14 @@ impl NostrClient {
         }
 
         Ok(collected.into_values().collect())
+    }
+
+    #[allow(dead_code)]
+    pub async fn connect_websocket(
+        &self,
+        url: &Url,
+        tls_key: Option<&PublishedTlsKey>,
+    ) -> Result<SecureWebSocketStream, NostrClientError> {
+        connect_websocket(url, tls_key).await.map_err(Into::into)
     }
 }
