@@ -2,6 +2,7 @@
 
 pub mod blossom;
 pub mod input;
+pub mod js;
 pub mod navigation;
 pub mod net;
 pub mod nns;

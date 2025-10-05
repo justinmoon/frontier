@@ -1,5 +1,6 @@
 mod blossom;
 mod input;
+mod js;
 mod navigation;
 mod net;
 mod nns;

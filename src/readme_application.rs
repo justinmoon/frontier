@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::blossom::BlossomFetcher;
+use crate::js::processor;
 use crate::navigation::{
     execute_fetch, prepare_navigation, BlossomFetchRequest, FetchRequest, FetchSource,
     FetchedDocument, NavigationPlan, SelectionPrompt,
@@ -581,7 +582,25 @@ async fn run_fetch_task(
     retain_scroll: bool,
 ) {
     match execute_fetch(&request, net_provider, blossom).await {
-        Ok(document) => {
+        Ok(mut document) => {
+            match processor::execute_inline_scripts(&mut document) {
+                Ok(Some(summary)) => {
+                    tracing::info!(
+                        target = "quickjs",
+                        scripts = summary.executed_scripts,
+                        dom_mutations = summary.dom_mutations,
+                        "processed inline scripts"
+                    );
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!(
+                        target = "quickjs",
+                        error = %err,
+                        "failed to process inline scripts"
+                    );
+                }
+            }
             let event = ReadmeEvent::Navigation(Box::new(NavigationMessage::Completed {
                 document: Box::new(document),
                 prompt: None,

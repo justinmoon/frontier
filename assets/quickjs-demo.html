@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>QuickJS Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background: #0d1117;
+            color: #f0f6fc;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        p {
+            margin: 0;
+            font-size: 18px;
+            color: #7d8590;
+        }
+    </style>
+</head>
+<body>
+    <h1 id="message">Loading…</h1>
+    <p>Check your terminal for <code>console.log</code> output.</p>
+    <script>
+        const message = document.getElementById('message');
+        message.textContent = 'Hello from QuickJS!';
+        frontier.emitDomPatch({
+            type: 'attribute',
+            id: 'message',
+            name: 'data-origin',
+            value: 'quickjs-demo'
+        });
+        console.log('JavaScript executed successfully');
+    </script>
+</body>
+</html>
