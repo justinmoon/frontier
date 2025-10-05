@@ -2158,6 +2158,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rusqlite",
+ "rustls 0.22.4",
  "rustls 0.23.32",
  "rustls-pemfile",
  "serde",

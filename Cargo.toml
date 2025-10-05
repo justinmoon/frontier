@@ -26,7 +26,7 @@ anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e026
 anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process"] }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
@@ -51,6 +51,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 anyhow = "1.0"
 rustls = "0.23"
+rustls_022 = { package = "rustls", version = "0.22" }
 rustls-pemfile = "2.0"
 webpki = "0.22"
 x509-parser = "0.16"
@@ -59,7 +60,7 @@ hex = "0.4"
 [dev-dependencies]
 accesskit = "0.17"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "signal", "process"] }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }

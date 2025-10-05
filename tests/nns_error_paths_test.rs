@@ -138,6 +138,7 @@ async fn test_multiple_claims_requires_selection() {
         .filter_map(|claim| match &claim.location {
             ClaimLocation::DirectIp(addr) => Some(addr.to_string()),
             ClaimLocation::Blossom { .. } => None,
+            ClaimLocation::LegacyUrl(url) => Some(url.to_string()),
         })
         .collect();
 
@@ -213,6 +214,7 @@ async fn test_malformed_events_are_skipped() {
     let primary_addr = match output.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     assert_eq!(primary_addr.to_string(), "192.168.1.100:8080");
 
@@ -283,10 +285,12 @@ async fn test_cache_behavior() {
     let addr1 = match output1.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     let addr2 = match output2.claims.primary.location {
         ClaimLocation::DirectIp(addr) => addr,
         ClaimLocation::Blossom { .. } => panic!("expected direct IP"),
+        ClaimLocation::LegacyUrl(url) => panic!("unexpected legacy url {url}"),
     };
     assert_eq!(addr1, addr2);
 

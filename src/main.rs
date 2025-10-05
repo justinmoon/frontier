@@ -5,6 +5,7 @@ mod net;
 mod nns;
 mod readme_application;
 mod storage;
+mod tls;
 
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;

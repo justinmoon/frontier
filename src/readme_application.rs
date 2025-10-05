@@ -296,7 +296,8 @@ impl ReadmeApplication {
                 servers: context.servers.clone(),
                 relays: context.relays.clone(),
                 path: path.clone(),
-                tls_pubkey: None,
+                tls_key: context.tls_key.clone(),
+                endpoints: context.endpoints.clone(),
             }),
             display_url: blossom_display_label(&context.name, &path),
         };
@@ -550,6 +551,7 @@ fn describe_claim_location(claim: &NnsClaim) -> String {
                 format!("blossom:{root_hash}")
             }
         }
+        ClaimLocation::LegacyUrl(url) => url.to_string(),
     }
 }
 

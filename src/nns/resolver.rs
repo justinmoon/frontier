@@ -8,7 +8,10 @@ use thiserror::Error;
 use tokio::task::{self, JoinError};
 
 use crate::net::{NostrClient, NostrClientError, RelayDirectory};
-use crate::nns::models::{ClaimLocation, ModelError, NnsClaim, ResolvedClaims};
+use crate::nns::models::{
+    ClaimLocation, ModelError, NnsClaim, PublishedTlsKey, ResolvedClaims, ServiceEndpoint,
+    ServiceKind, TlsAlgorithm,
+};
 use crate::nns::scoring::score_claim;
 use crate::storage::{unix_timestamp, ClaimRecord, SelectionRecord, Storage, StorageError};
 
@@ -204,17 +207,76 @@ impl NnsResolver {
             }
         };
 
+        let endpoints = if let Some(raw) = record.endpoints.as_ref() {
+            match serde_json::from_str::<Vec<ServiceEndpoint>>(raw) {
+                Ok(endpoints) => endpoints,
+                Err(err) => {
+                    tracing::warn!(
+                        name = %record.name,
+                        error = %err,
+                        "failed to parse cached endpoints"
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let service_kind = if let Some(raw) = record.service_kind.as_ref() {
+            match serde_json::from_str::<ServiceKind>(raw) {
+                Ok(kind) => Some(kind),
+                Err(err) => {
+                    tracing::warn!(
+                        name = %record.name,
+                        error = %err,
+                        "failed to parse cached service kind"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let tls_key = if let Some(pubkey_hex) = record.tls_pubkey.as_ref() {
+            match TlsAlgorithm::from_tag(record.tls_alg.as_deref()) {
+                Ok(algorithm) => match PublishedTlsKey::new(algorithm, pubkey_hex) {
+                    Ok(key) => Some(key),
+                    Err(err) => {
+                        tracing::warn!(
+                            name = %record.name,
+                            error = %err,
+                            "failed to parse cached tls key"
+                        );
+                        None
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        name = %record.name,
+                        error = %err,
+                        "failed to parse cached tls algorithm"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Some(NnsClaim {
             name: record.name.clone(),
+            service_kind,
             location,
+            endpoints,
             pubkey_hex: record.pubkey.clone(),
             pubkey_npub,
             created_at,
             relays,
-            note: None,
+            note: record.note.clone(),
             event_id,
-            tls_pubkey: None,
-            tls_alg: None,
+            tls_key,
         }))
     }
 
@@ -269,22 +331,49 @@ impl NnsResolver {
         let name = name.to_string();
         let records: Vec<ClaimRecord> = claims
             .iter()
-            .map(|claim| ClaimRecord {
-                name: name.clone(),
-                pubkey: claim.pubkey_hex.clone(),
-                ip: match &claim.location {
+            .map(|claim| -> Result<ClaimRecord, ResolverError> {
+                let ip_repr = match &claim.location {
                     ClaimLocation::DirectIp(addr) => addr.to_string(),
                     ClaimLocation::Blossom { root_hash, .. } => root_hash.clone(),
-                },
-                relays: claim.relays.iter().map(|url| url.to_string()).collect(),
-                created_at: claim.created_at.as_u64() as i64,
-                fetched_at: now,
-                event_id: claim.event_id.to_hex(),
-                location: Some(
-                    serde_json::to_string(&claim.location).expect("claim location serializable"),
-                ),
+                    ClaimLocation::LegacyUrl(url) => url.to_string(),
+                };
+
+                let location_json =
+                    serde_json::to_string(&claim.location).map_err(StorageError::from)?;
+                let endpoints_json = if claim.endpoints.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&claim.endpoints).map_err(StorageError::from)?)
+                };
+                let service_kind_json = if let Some(kind) = &claim.service_kind {
+                    Some(serde_json::to_string(kind).map_err(StorageError::from)?)
+                } else {
+                    None
+                };
+
+                let blossom_root = match &claim.location {
+                    ClaimLocation::Blossom { root_hash, .. } => Some(root_hash.clone()),
+                    _ => None,
+                };
+
+                Ok(ClaimRecord {
+                    name: name.clone(),
+                    pubkey: claim.pubkey_hex.clone(),
+                    ip: ip_repr,
+                    relays: claim.relays.iter().map(|url| url.to_string()).collect(),
+                    created_at: claim.created_at.as_u64() as i64,
+                    fetched_at: now,
+                    event_id: claim.event_id.to_hex(),
+                    location: Some(location_json),
+                    endpoints: endpoints_json,
+                    service_kind: service_kind_json,
+                    tls_pubkey: claim.tls_spki_hex(),
+                    tls_alg: claim.tls_algorithm().map(|alg| alg.to_string()),
+                    blossom_root,
+                    note: claim.note.clone(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let result = task::spawn_blocking(move || -> Result<(), StorageError> {
             for record in records {
