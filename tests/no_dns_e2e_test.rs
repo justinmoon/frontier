@@ -9,7 +9,11 @@
 /// NO DNS lookups anywhere. Everything TLS-encrypted.
 ///
 /// Run: cargo test --test no_dns_e2e_test
-use frontier::{nns::ClaimLocation, NnsResolver, NostrClient, RelayDirectory, Storage};
+use frontier::{
+    nns::{ClaimLocation, PublishedTlsKey, TlsAlgorithm},
+    tls::connect_websocket,
+    NnsResolver, NostrClient, RelayDirectory, Storage,
+};
 use futures_util::{SinkExt, StreamExt};
 use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, Tag, Timestamp};
 use rustls::{
@@ -28,6 +32,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
+use url::Url;
 
 #[tokio::test]
 async fn test_no_dns_full_stack() {
@@ -223,7 +228,17 @@ async fn test_no_dns_full_stack() {
 
     // Actually connect to the relay with TLS to prove it works
     println!("✓ Relay TLS info retrieved - ready for WebSocket connection");
-    println!("✓ Would use custom TLS verification for wss:// connection (NO DNS)");
+    let relay_tls_key =
+        PublishedTlsKey::new(TlsAlgorithm::Ed25519, &relay_tls_pubkey).expect("relay tls key");
+    let relay_url = Url::parse(&format!("wss://{}", relay_ip)).expect("relay url");
+    let mut relay_socket = connect_websocket(&relay_url, Some(&relay_tls_key))
+        .await
+        .expect("connect relay websocket");
+    relay_socket
+        .close(None)
+        .await
+        .expect("close relay websocket");
+    println!("✓ Established pinned TLS WebSocket to relay (NO DNS)");
     println!();
 
     // Cleanup
@@ -478,17 +493,17 @@ async fn start_discovery_relay(events: Vec<Event>) -> DiscoveryRelay {
                                 while let Some(msg) = ws.next().await {
                                     match msg {
                                         Ok(Message::Text(text)) => {
-                                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                            if let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) {
                                                 if value.get(0) == Some(&Value::String("REQ".into())) {
                                                     if let Some(id) = value.get(1).and_then(|v| v.as_str()) {
                                                         // Send all events for this subscription
                                                         for event in &events_clone {
                                                             let event_value = serde_json::to_value(event).unwrap();
                                                             let event_msg = json!(["EVENT", id, event_value]);
-                                                            let _ = ws.send(Message::Text(event_msg.to_string())).await;
+                                                            let _ = ws.send(Message::Text(event_msg.to_string().into())).await;
                                                         }
                                                         let eose_msg = json!(["EOSE", id]);
-                                                        let _ = ws.send(Message::Text(eose_msg.to_string())).await;
+                                                        let _ = ws.send(Message::Text(eose_msg.to_string().into())).await;
                                                     }
                                                 }
                                             }
@@ -595,6 +610,21 @@ async fn fetch_with_tls_url(url: &str, expected_pubkey: &str) -> String {
         .client()
         .clone();
 
-    let response = client.get(url).send().await.unwrap();
-    response.text().await.unwrap()
+    let mut last_err = None;
+    for attempt in 0..3 {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let ok = response.error_for_status().unwrap();
+                return ok.text().await.unwrap();
+            }
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < 2 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    panic!("failed to fetch {url}: {last_err:?}");
 }

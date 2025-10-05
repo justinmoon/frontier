@@ -4,6 +4,12 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use thiserror::Error;
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite;
+use tokio_tungstenite::{
+    connect_async, connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
+};
+use url::Url;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::nns::{PublishedTlsKey, TlsAlgorithm};
@@ -12,6 +18,8 @@ use crate::nns::{PublishedTlsKey, TlsAlgorithm};
 pub enum SecureTransportError {
     #[error("failed to build http client: {0}")]
     HttpClient(#[from] reqwest::Error),
+    #[error("websocket error: {0}")]
+    WebSocket(#[from] tungstenite::Error),
 }
 
 #[derive(Clone)]
@@ -46,6 +54,25 @@ fn build_pinned_config(tls_key: &PublishedTlsKey) -> ClientConfig {
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth()
+}
+
+#[allow(dead_code)]
+pub type SecureWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[allow(dead_code)]
+pub async fn connect_websocket(
+    url: &Url,
+    tls_key: Option<&PublishedTlsKey>,
+) -> Result<SecureWebSocketStream, SecureTransportError> {
+    if url.scheme() == "wss" {
+        let connector = tls_key.map(|key| Connector::Rustls(Arc::new(build_pinned_config(key))));
+        let (stream, _) =
+            connect_async_tls_with_config(url.as_str(), None, false, connector).await?;
+        Ok(stream)
+    } else {
+        let (stream, _) = connect_async(url.as_str()).await?;
+        Ok(stream)
+    }
 }
 
 #[derive(Debug)]

@@ -240,22 +240,27 @@ async fn fetch_secure_http(
 
     for endpoint in &request.endpoints {
         match client.get(endpoint.url.clone()).send().await {
-            Ok(response) => {
-                let final_url = response.url().to_string();
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|e| FetchError::Network(e.to_string()))?;
-                let contents = std::str::from_utf8(&bytes)?.to_string();
+            Ok(response) => match response.error_for_status() {
+                Ok(success) => {
+                    let final_url = success.url().to_string();
+                    let bytes = success
+                        .bytes()
+                        .await
+                        .map_err(|e| FetchError::Network(e.to_string()))?;
+                    let contents = std::str::from_utf8(&bytes)?.to_string();
 
-                return Ok(FetchedDocument {
-                    base_url: final_url,
-                    contents,
-                    file_path: None,
-                    display_url: display_url.to_string(),
-                    blossom: None,
-                });
-            }
+                    return Ok(FetchedDocument {
+                        base_url: final_url,
+                        contents,
+                        file_path: None,
+                        display_url: display_url.to_string(),
+                        blossom: None,
+                    });
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            },
             Err(err) => {
                 last_error = Some(err);
             }

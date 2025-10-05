@@ -100,7 +100,7 @@ async fn start_blossom_relay(claim: Event, manifests: Vec<Event>) -> Result<Rela
                             while let Some(msg) = ws.next().await {
                                 match msg {
                                     Ok(Message::Text(text)) => {
-                                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                        if let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) {
                                             if value.get(0) == Some(&Value::String("REQ".into())) {
                                                 if let Some(sub_id) = value.get(1).and_then(|v| v.as_str()) {
                                                     let filters = value.as_array().into_iter().flatten().skip(2);
@@ -122,16 +122,22 @@ async fn start_blossom_relay(claim: Event, manifests: Vec<Event>) -> Result<Rela
                                                     }
                                                     if want_claim {
                                                         let event_msg = json!(["EVENT", sub_id, serde_json::to_value(&*claim).unwrap()]);
-                                                        let _ = ws.send(Message::Text(event_msg.to_string())).await;
+                                                        let _ = ws
+                                                            .send(Message::Text(event_msg.to_string().into()))
+                                                            .await;
                                                     }
                                                     if want_manifest {
                                                         for event in manifests.iter() {
                                                             let event_msg = json!(["EVENT", sub_id, serde_json::to_value(event).unwrap()]);
-                                                            let _ = ws.send(Message::Text(event_msg.to_string())).await;
+                                                            let _ = ws
+                                                                .send(Message::Text(event_msg.to_string().into()))
+                                                                .await;
                                                         }
                                                     }
                                                     let eose_msg = json!(["EOSE", sub_id]);
-                                                    let _ = ws.send(Message::Text(eose_msg.to_string())).await;
+                                                    let _ = ws
+                                                        .send(Message::Text(eose_msg.to_string().into()))
+                                                        .await;
                                                 }
                                             }
                                         }
