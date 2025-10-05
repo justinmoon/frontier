@@ -128,6 +128,7 @@ fn main() {
                 file_path: None,
                 display_url: prompt.display_url.clone(),
                 blossom: None,
+                scripts: Vec::new(),
             };
             (document, Some(prompt))
         }

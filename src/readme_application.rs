@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::blossom::BlossomFetcher;
+use crate::js::processor::ScriptExecutionSummary;
+use crate::js::session::JsPageRuntime;
 use crate::navigation::{
     execute_fetch, prepare_navigation, BlossomFetchRequest, FetchRequest, FetchSource,
     FetchedDocument, NavigationPlan, SelectionPrompt,
@@ -17,6 +19,7 @@ use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html_escape::encode_text;
 use tokio::runtime::Handle;
+use tracing::{error, info};
 use winit::application::ApplicationHandler;
 use winit::event::{Modifiers, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
@@ -61,6 +64,7 @@ pub struct ReadmeApplication {
     keyboard_modifiers: Modifiers,
     current_input: String,
     current_document: Option<FetchedDocument>,
+    current_js_runtime: Option<JsPageRuntime>,
     selection_overlay: Option<SelectionOverlayState>,
     url_history: Vec<String>,
 }
@@ -84,6 +88,7 @@ impl ReadmeApplication {
             keyboard_modifiers: Default::default(),
             current_input: initial_input,
             current_document: None,
+            current_js_runtime: None,
             selection_overlay: None,
             url_history: Vec::new(),
         }
@@ -103,9 +108,72 @@ impl ReadmeApplication {
         self.compose_html()
     }
 
-    fn set_document(&mut self, document: FetchedDocument) {
+    fn set_document(&mut self, mut document: FetchedDocument) {
+        self.current_js_runtime = None;
+
+        if !document.scripts.is_empty() {
+            match JsPageRuntime::new(&document.contents, &document.scripts) {
+                Ok(Some(mut runtime)) => {
+                    let execution = match runtime.run_blocking_scripts() {
+                        Ok(result) => {
+                            if let Some(summary) = &result {
+                                self.log_script_summary(&document, summary);
+                            }
+                            result
+                        }
+                        Err(err) => {
+                            error!(
+                                target = "quickjs",
+                                url = %document.base_url,
+                                error = %err,
+                                "failed to execute blocking scripts"
+                            );
+                            None
+                        }
+                    };
+
+                    match runtime.document_html() {
+                        Ok(mutated) => {
+                            document.contents = mutated;
+                        }
+                        Err(err) => {
+                            error!(
+                                target = "quickjs",
+                                url = %document.base_url,
+                                error = %err,
+                                "failed to serialize document after scripts"
+                            );
+                        }
+                    }
+
+                    if execution.is_some() || !runtime.scripts().is_empty() {
+                        self.current_js_runtime = Some(runtime);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        url = %document.base_url,
+                        error = %err,
+                        "failed to initialize page runtime"
+                    );
+                }
+            }
+        }
+
         self.current_input = document.display_url.clone();
         self.current_document = Some(document);
+    }
+
+    fn log_script_summary(&self, document: &FetchedDocument, summary: &ScriptExecutionSummary) {
+        info!(
+            target = "quickjs",
+            url = %document.base_url,
+            scripts = summary.executed_scripts,
+            dom_mutations = summary.dom_mutations,
+            "executed blocking inline scripts"
+        );
     }
 
     fn set_selection_prompt(&mut self, prompt: Option<SelectionPrompt>) {
@@ -359,6 +427,7 @@ impl ReadmeApplication {
             file_path: None,
             display_url: self.current_input.clone(),
             blossom: None,
+            scripts: Vec::new(),
         };
         self.set_document(document);
         self.selection_overlay = None;

@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 use crate::blossom::{BlossomError, BlossomFetcher};
 use crate::input::{parse_input, ParseInputError, ParsedInput};
 use crate::js::processor;
+use crate::js::script::ScriptDescriptor;
 use crate::nns::{
     ClaimLocation, NnsClaim, NnsResolver, PublishedTlsKey, ResolverError, ResolverOutput,
     ServiceEndpoint, TransportKind,
@@ -80,6 +81,7 @@ pub struct FetchedDocument {
     pub file_path: Option<PathBuf>,
     pub display_url: String,
     pub blossom: Option<BlossomDocumentContext>,
+    pub scripts: Vec<ScriptDescriptor>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,8 +223,9 @@ async fn fetch_legacy_url(
         file_path: None,
         display_url: display_url.to_string(),
         blossom: None,
+        scripts: Vec::new(),
     };
-    process_document_inline_scripts(&mut document);
+    collect_document_scripts(&mut document);
 
     Ok(document)
 }
@@ -259,8 +262,9 @@ async fn fetch_secure_http(
                         file_path: None,
                         display_url: display_url.to_string(),
                         blossom: None,
+                        scripts: Vec::new(),
                     };
-                    process_document_inline_scripts(&mut document);
+                    collect_document_scripts(&mut document);
 
                     return Ok(document);
                 }
@@ -304,8 +308,9 @@ fn fetch_file_url(url: &Url, display_url: &str) -> Result<FetchedDocument, Fetch
         file_path: Some(path),
         display_url: display_url.to_string(),
         blossom: None,
+        scripts: Vec::new(),
     };
-    process_document_inline_scripts(&mut document);
+    collect_document_scripts(&mut document);
 
     Ok(document)
 }
@@ -529,8 +534,9 @@ async fn fetch_blossom_document(
                     file_path: None,
                     display_url: display_url.to_string(),
                     blossom: Some(context),
+                    scripts: Vec::new(),
                 };
-                process_document_inline_scripts(&mut document);
+                collect_document_scripts(&mut document);
                 return Ok(document);
             }
             Err(err) => {
@@ -581,27 +587,21 @@ fn dedupe_candidates(initial: Vec<String>) -> Vec<String> {
     deduped
 }
 
-fn process_document_inline_scripts(document: &mut FetchedDocument) {
-    match processor::execute_inline_scripts(document) {
-        Ok(Some(summary)) => {
-            tracing::info!(
-                target = "quickjs",
-                scripts = summary.executed_scripts,
-                dom_mutations = summary.dom_mutations,
-                url = %document.base_url,
-                "processed inline scripts"
-            );
-        }
-        Ok(None) => {}
+fn collect_document_scripts(document: &mut FetchedDocument) {
+    let scripts = match processor::collect_scripts(&document.contents) {
+        Ok(scripts) => scripts,
         Err(err) => {
             tracing::error!(
                 target = "quickjs",
                 url = %document.base_url,
                 error = %err,
-                "failed to process inline scripts"
+                "failed to collect scripts"
             );
+            return;
         }
-    }
+    };
+
+    document.scripts = scripts;
 }
 
 #[cfg(test)]
@@ -617,7 +617,11 @@ mod tests {
 
         let document = fetch_file_url(&file_url, file_url.as_str()).expect("file fetch");
 
-        assert!(document.contents.contains("Hello from QuickJS!"));
-        assert!(document.contents.contains("data-origin=\"quickjs-demo\""));
+        assert_eq!(document.scripts.len(), 1);
+        assert!(matches!(
+            document.scripts[0].source,
+            crate::js::script::ScriptSource::Inline { .. }
+        ));
+        assert!(document.contents.contains("<script>"));
     }
 }
