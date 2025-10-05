@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 
 use crate::blossom::{BlossomError, BlossomFetcher};
 use crate::input::{parse_input, ParseInputError, ParsedInput};
+use crate::js::processor;
 use crate::nns::{
     ClaimLocation, NnsClaim, NnsResolver, PublishedTlsKey, ResolverError, ResolverOutput,
     ServiceEndpoint, TransportKind,
@@ -214,13 +215,16 @@ async fn fetch_legacy_url(
 
     let contents = std::str::from_utf8(&bytes)?.to_string();
 
-    Ok(FetchedDocument {
+    let mut document = FetchedDocument {
         base_url: response_url,
         contents,
         file_path: None,
         display_url: display_url.to_string(),
         blossom: None,
-    })
+    };
+    process_document_inline_scripts(&mut document);
+
+    Ok(document)
 }
 
 async fn fetch_secure_http(
@@ -249,13 +253,16 @@ async fn fetch_secure_http(
                         .map_err(|e| FetchError::Network(e.to_string()))?;
                     let contents = std::str::from_utf8(&bytes)?.to_string();
 
-                    return Ok(FetchedDocument {
+                    let mut document = FetchedDocument {
                         base_url: final_url,
                         contents,
                         file_path: None,
                         display_url: display_url.to_string(),
                         blossom: None,
-                    });
+                    };
+                    process_document_inline_scripts(&mut document);
+
+                    return Ok(document);
                 }
                 Err(err) => {
                     last_error = Some(err);
@@ -291,13 +298,16 @@ fn fetch_file_url(url: &Url, display_url: &str) -> Result<FetchedDocument, Fetch
     let base_url = url.as_str().to_string();
     let contents = std::fs::read_to_string(&path)?;
 
-    Ok(FetchedDocument {
+    let mut document = FetchedDocument {
         base_url,
         contents,
         file_path: Some(path),
         display_url: display_url.to_string(),
         blossom: None,
-    })
+    };
+    process_document_inline_scripts(&mut document);
+
+    Ok(document)
 }
 
 struct SelectionData {
@@ -513,13 +523,15 @@ async fn fetch_blossom_document(
                     tls_key: request.tls_key.clone(),
                     endpoints: request.endpoints.clone(),
                 };
-                return Ok(FetchedDocument {
+                let mut document = FetchedDocument {
                     base_url,
                     contents,
                     file_path: None,
                     display_url: display_url.to_string(),
                     blossom: Some(context),
-                });
+                };
+                process_document_inline_scripts(&mut document);
+                return Ok(document);
             }
             Err(err) => {
                 last_error = Some(err);
@@ -567,4 +579,45 @@ fn dedupe_candidates(initial: Vec<String>) -> Vec<String> {
         }
     }
     deduped
+}
+
+fn process_document_inline_scripts(document: &mut FetchedDocument) {
+    match processor::execute_inline_scripts(document) {
+        Ok(Some(summary)) => {
+            tracing::info!(
+                target = "quickjs",
+                scripts = summary.executed_scripts,
+                dom_mutations = summary.dom_mutations,
+                url = %document.base_url,
+                "processed inline scripts"
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!(
+                target = "quickjs",
+                url = %document.base_url,
+                error = %err,
+                "failed to process inline scripts"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::url::Url;
+
+    #[test]
+    fn file_fetch_executes_inline_scripts() {
+        let asset_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/quickjs-demo.html");
+        let file_url = Url::from_file_path(&asset_path).expect("file url");
+
+        let document = fetch_file_url(&file_url, file_url.as_str()).expect("file fetch");
+
+        assert!(document.contents.contains("Hello from QuickJS!"));
+        assert!(document.contents.contains("data-origin=\"quickjs-demo\""));
+    }
 }
