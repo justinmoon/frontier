@@ -102,6 +102,7 @@ impl BlossomFetcher {
         })
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_document(
         &self,
         pubkey_hex: &str,

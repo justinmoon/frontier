@@ -31,40 +31,37 @@ async fn start_blossom_http_server(blobs: HashMap<String, Vec<u8>>) -> Result<Bl
         loop {
             tokio::select! {
                 accept = listener.accept() => {
-                    match accept {
-                        Ok((mut stream, _)) => {
-                            let blobs = Arc::clone(&blobs);
-                            tokio::spawn(async move {
-                                let mut buffer = vec![0u8; 4096];
-                                match stream.read(&mut buffer).await {
-                                    Ok(0) => {}
-                                    Ok(n) => {
-                                        let request = String::from_utf8_lossy(&buffer[..n]);
-                                        let mut lines = request.lines();
-                                        let first_line = lines.next().unwrap_or("GET /");
-                                        let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-                                        let key = path.trim_start_matches('/');
-                                        let (status_line, body) = if let Some(content) = blobs.get(key) {
-                                            ("HTTP/1.1 200 OK\r\n", content.clone())
-                                        } else {
-                                            ("HTTP/1.1 404 Not Found\r\n", Vec::new())
-                                        };
-                                        let header = format!(
-                                            "{status}Content-Length: {}\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n",
-                                            body.len(),
-                                            status = status_line
-                                        );
-                                        let _ = stream.write_all(header.as_bytes()).await;
-                                        if !body.is_empty() {
-                                            let _ = stream.write_all(&body).await;
-                                        }
-                                        let _ = stream.flush().await;
+                    if let Ok((mut stream, _)) = accept {
+                        let blobs = Arc::clone(&blobs);
+                        tokio::spawn(async move {
+                            let mut buffer = vec![0u8; 4096];
+                            match stream.read(&mut buffer).await {
+                                Ok(0) => {}
+                                Ok(n) => {
+                                    let request = String::from_utf8_lossy(&buffer[..n]);
+                                    let mut lines = request.lines();
+                                    let first_line = lines.next().unwrap_or("GET /");
+                                    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+                                    let key = path.trim_start_matches('/');
+                                    let (status_line, body) = if let Some(content) = blobs.get(key) {
+                                        ("HTTP/1.1 200 OK\r\n", content.clone())
+                                    } else {
+                                        ("HTTP/1.1 404 Not Found\r\n", Vec::new())
+                                    };
+                                    let header = format!(
+                                        "{status}Content-Length: {}\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n",
+                                        body.len(),
+                                        status = status_line
+                                    );
+                                    let _ = stream.write_all(header.as_bytes()).await;
+                                    if !body.is_empty() {
+                                        let _ = stream.write_all(&body).await;
                                     }
-                                    Err(_) => {}
+                                    let _ = stream.flush().await;
                                 }
-                            });
-                        }
-                        Err(_) => {}
+                                Err(_) => {}
+                            }
+                        });
                     }
                 }
                 _ = &mut shutdown_rx => break,

@@ -322,7 +322,7 @@ pub(crate) fn claim_fetch_request_with_path(
             let servers = servers.clone();
             let relays = claim.relays.iter().cloned().collect();
             let path = preferred_path
-                .map(|p| normalize_blossom_path(p))
+                .map(normalize_blossom_path)
                 .unwrap_or_else(|| DEFAULT_BLOSSOM_PATHS[0].to_string());
             FetchSource::Blossom(BlossomFetchRequest {
                 name: name.to_string(),
