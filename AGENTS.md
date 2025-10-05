@@ -20,3 +20,5 @@ Never stub things out for a real implementation later unless you are explicitely
 When you're developing a feature that effects the ui, try to create a UI test using blitz's accessibility feautures. This can help give you a feedback loop. Without a feedback loop you struggle to deliver working features because you can't interact with your work.
 
 **`just ci` MUST PASS** before any feature or change is considered complete. The agent must iterate on the code and get all CI checks passing. This includes:
+
+Take notes as you go in notes/ folder. If you notice tech debt or anti-patterns or any opportunity for improvement in the project just jot it down there. Periodically we will go through these notes and implement suggestions.
