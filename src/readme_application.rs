@@ -108,47 +108,13 @@ impl ReadmeApplication {
         self.compose_html()
     }
 
-    fn set_document(&mut self, mut document: FetchedDocument) {
+    fn set_document(&mut self, document: FetchedDocument) {
         self.current_js_runtime = None;
 
         if !document.scripts.is_empty() {
             match JsPageRuntime::new(&document.contents, &document.scripts) {
-                Ok(Some(mut runtime)) => {
-                    let execution = match runtime.run_blocking_scripts() {
-                        Ok(result) => {
-                            if let Some(summary) = &result {
-                                self.log_script_summary(&document, summary);
-                            }
-                            result
-                        }
-                        Err(err) => {
-                            error!(
-                                target = "quickjs",
-                                url = %document.base_url,
-                                error = %err,
-                                "failed to execute blocking scripts"
-                            );
-                            None
-                        }
-                    };
-
-                    match runtime.document_html() {
-                        Ok(mutated) => {
-                            document.contents = mutated;
-                        }
-                        Err(err) => {
-                            error!(
-                                target = "quickjs",
-                                url = %document.base_url,
-                                error = %err,
-                                "failed to serialize document after scripts"
-                            );
-                        }
-                    }
-
-                    if execution.is_some() || !runtime.scripts().is_empty() {
-                        self.current_js_runtime = Some(runtime);
-                    }
+                Ok(Some(runtime)) => {
+                    self.current_js_runtime = Some(runtime);
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -210,25 +176,68 @@ impl ReadmeApplication {
     }
 
     fn render_current_document(&mut self, retain_scroll: bool) {
-        if let Some(document) = &self.current_document {
-            let html = self.compose_html();
-            let mut doc = HtmlDocument::from_html(
-                &html,
-                DocumentConfig {
-                    base_url: Some(document.base_url.clone()),
-                    ua_stylesheets: None,
-                    net_provider: Some(self.net_provider.clone()),
-                    navigation_provider: Some(self.navigation_provider.clone()),
-                    ..Default::default()
-                },
-            );
+        let Some(fetched) = self.current_document.as_ref().cloned() else {
+            return;
+        };
 
-            if let Some(runtime) = self.current_js_runtime.as_mut() {
-                runtime.attach_document(&mut *doc);
+        let html = self.compose_html();
+        let base_url = fetched.base_url.clone();
+        let mut doc = HtmlDocument::from_html(
+            &html,
+            DocumentConfig {
+                base_url: Some(base_url.clone()),
+                ua_stylesheets: None,
+                net_provider: Some(self.net_provider.clone()),
+                navigation_provider: Some(self.navigation_provider.clone()),
+                ..Default::default()
+            },
+        );
+
+        let mut updated_contents: Option<String> = None;
+        let mut summary_to_log: Option<ScriptExecutionSummary> = None;
+
+        if let Some(runtime) = self.current_js_runtime.as_mut() {
+            runtime.attach_document(&mut *doc);
+            match runtime.run_blocking_scripts() {
+                Ok(Some(summary)) => {
+                    summary_to_log = Some(summary);
+                    match runtime.document_html() {
+                        Ok(mutated) => {
+                            updated_contents = Some(mutated);
+                        }
+                        Err(err) => {
+                            error!(
+                                target = "quickjs",
+                                url = %base_url,
+                                error = %err,
+                                "failed to serialize document after scripts"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        url = %base_url,
+                        error = %err,
+                        "failed to execute blocking scripts"
+                    );
+                }
             }
+        }
 
-            self.window_mut()
-                .replace_document(Box::new(doc) as _, retain_scroll);
+        self.window_mut()
+            .replace_document(Box::new(doc) as _, retain_scroll);
+
+        if let Some(mutated) = updated_contents {
+            if let Some(current) = self.current_document.as_mut() {
+                current.contents = mutated;
+            }
+        }
+
+        if let Some(summary) = summary_to_log {
+            self.log_script_summary(&fetched, &summary);
         }
     }
 

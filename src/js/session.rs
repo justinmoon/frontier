@@ -55,11 +55,6 @@ impl JsPageRuntime {
             .context("failed to serialize runtime document")
     }
 
-    /// Expose the script manifest associated with this runtime.
-    pub fn scripts(&self) -> &[ScriptDescriptor] {
-        &self.scripts
-    }
-
     /// Attach the runtime to the live Blitz document so subsequent mutations
     /// operate on the rendered tree.
     pub fn attach_document(&mut self, document: &mut BaseDocument) {
