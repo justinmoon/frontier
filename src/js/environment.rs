@@ -1,5 +1,7 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use blitz_dom::BaseDocument;
@@ -7,8 +9,13 @@ use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzMouseButtonEvent, DomEvent, DomEventData, MouseEventButton,
 };
 use keyboard_types::{Location, Modifiers};
-use rquickjs::{Ctx, Function, IntoJs};
+use rquickjs::function::{Args as FunctionArgs, Opt};
+use rquickjs::{Ctx, Function, IntoJs, Value};
 use serde_json::{json, to_string as to_json_string, Map as JsonMap, Value as JsonValue};
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tracing::error;
 
 use super::dom::{DomPatch, DomState};
@@ -17,6 +24,7 @@ use super::runtime::QuickJsEngine;
 pub struct JsDomEnvironment {
     engine: QuickJsEngine,
     state: Rc<RefCell<DomState>>,
+    timers: Rc<TimerManager>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -29,8 +37,13 @@ impl JsDomEnvironment {
     pub fn new(html: &str) -> Result<Self> {
         let state = Rc::new(RefCell::new(DomState::new(html)));
         let engine = QuickJsEngine::new()?;
-        install_dom_bindings(&engine, Rc::clone(&state))?;
-        Ok(Self { engine, state })
+        let timers = Rc::new(TimerManager::new(Handle::current()));
+        install_dom_bindings(&engine, Rc::clone(&state), Rc::clone(&timers))?;
+        Ok(Self {
+            engine,
+            state,
+            timers,
+        })
     }
 
     pub fn is_listening(&self, event_type: &str) -> bool {
@@ -90,13 +103,19 @@ impl JsDomEnvironment {
             })
             .map_err(anyhow::Error::from);
 
-        match result {
-            Ok(outcome) => Ok(outcome),
+        let outcome = match result {
+            Ok(outcome) => outcome,
             Err(err) => {
                 error!(target = "quickjs", error = %err, "failed to dispatch DOM event");
-                Ok(DispatchOutcome::default())
+                DispatchOutcome::default()
             }
+        };
+
+        if let Err(err) = self.pump() {
+            error!(target = "quickjs", error = %err, "failed to pump timers after event");
         }
+
+        Ok(outcome)
     }
 
     pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
@@ -113,10 +132,34 @@ impl JsDomEnvironment {
 
     pub fn attach_document(&self, document: &mut BaseDocument) {
         self.state.borrow_mut().attach_document(document);
+        let _ = self.engine.with_context(|ctx| {
+            let global = ctx.globals();
+            if let Ok(frontier) = global.get::<_, rquickjs::Object>("frontier") {
+                if let Ok(refresh) = frontier.get::<_, rquickjs::Function>("__refreshDocument") {
+                    let _: Value = refresh.call(())?;
+                }
+            }
+            Ok(())
+        });
+    }
+
+    pub fn pump(&self) -> Result<()> {
+        loop {
+            let timers_ran = self.timers.run_due(&self.engine)?;
+            let jobs_ran = self.engine.drain_jobs()?;
+            if !timers_ran && !jobs_ran {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
-fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) -> Result<()> {
+fn install_dom_bindings(
+    engine: &QuickJsEngine,
+    state: Rc<RefCell<DomState>>,
+    timers: Rc<TimerManager>,
+) -> Result<()> {
     engine.with_context(|ctx| {
         let global = ctx.globals();
 
@@ -597,6 +640,46 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
             global.set("__frontier_dom_document_handle", func)?;
         }
 
+        // Timer helpers
+        {
+            let timers_ref = Rc::clone(&timers);
+            let func = Function::new(
+                ctx.clone(),
+                move |kind: String, delay: Opt<f64>, repeating: bool| -> rquickjs::Result<u32> {
+                    let timer_kind = match kind.as_str() {
+                        "timeout" => TimerKind::Timeout,
+                        "interval" => TimerKind::Interval,
+                        "animationFrame" => TimerKind::AnimationFrame,
+                        other => {
+                            return Err(rquickjs::Error::new_from_js_message(
+                                "timer",
+                                "supported kind",
+                                format!("unsupported timer kind: {other}"),
+                            ))
+                        }
+                    };
+                    let delay_ms = delay.0.unwrap_or(0.0).max(0.0);
+                    Ok(timers_ref.register_timer(delay_ms, timer_kind, repeating))
+                },
+            )?
+            .with_name("__frontier_schedule_timer")?;
+            global.set("__frontier_schedule_timer", func)?;
+        }
+
+        {
+            let timers_ref = Rc::clone(&timers);
+            let func = Function::new(
+                ctx.clone(),
+                move |_ctx: Ctx<'_>, id: Value<'_>| -> rquickjs::Result<()> {
+                    let timer_id = id.as_int().unwrap_or_default() as u32;
+                    timers_ref.clear_timer(timer_id);
+                    Ok(())
+                },
+            )?
+            .with_name("__frontier_cancel_timer")?;
+            global.set("__frontier_cancel_timer", func)?;
+        }
+
         // Legacy patch interface retained for compatibility
         {
             let state_ref = Rc::clone(&state);
@@ -620,17 +703,183 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
             global.set("__frontier_dom_apply_patch", func)?;
         }
 
-        ctx.eval::<(), _>(DOM_BOOTSTRAP.as_bytes())?;
-        Ok(())
+        match ctx.eval::<(), _>(DOM_BOOTSTRAP.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if let rquickjs::Error::Exception = err {
+                    let value: Value<'_> = ctx.catch();
+                    tracing::error!(target = "quickjs", "DOM bootstrap failed: {:?}", value);
+                }
+                Err(err)
+            }
+        }
     })
 }
 
 fn dom_error<T>(ctx: &Ctx<'_>, err: anyhow::Error) -> rquickjs::Result<T> {
     tracing::error!(target = "quickjs", "DOM mutation failed: {err}");
-    println!("dom_error: {err}");
     let message = format!("DOM mutation failed: {err}");
     let value = message.into_js(ctx)?;
     Err(ctx.throw(value))
+}
+
+#[derive(Clone, Copy)]
+enum TimerKind {
+    Timeout,
+    Interval,
+    AnimationFrame,
+}
+
+struct TimerEntry {
+    kind: TimerKind,
+    repeating: bool,
+    task: Option<JoinHandle<()>>,
+}
+
+struct TimerManager {
+    handle: Handle,
+    start: Instant,
+    next_id: RefCell<u32>,
+    timers: RefCell<HashMap<u32, TimerEntry>>,
+    fired_rx: RefCell<UnboundedReceiver<u32>>,
+    fired_tx: UnboundedSender<u32>,
+}
+
+impl TimerManager {
+    fn new(handle: Handle) -> Self {
+        let (tx, rx) = unbounded_channel();
+        Self {
+            handle,
+            start: Instant::now(),
+            next_id: RefCell::new(1),
+            timers: RefCell::new(HashMap::new()),
+            fired_rx: RefCell::new(rx),
+            fired_tx: tx,
+        }
+    }
+
+    fn next_id(&self) -> u32 {
+        let mut id_ref = self.next_id.borrow_mut();
+        let id = *id_ref;
+        *id_ref = id.wrapping_add(1).max(1);
+        id
+    }
+
+    fn register_timer(&self, delay_ms: f64, kind: TimerKind, repeating: bool) -> u32 {
+        let id = self.next_id();
+        let mut duration = if delay_ms <= 0.0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_secs_f64(delay_ms / 1_000.0)
+        };
+
+        if matches!(kind, TimerKind::AnimationFrame) && duration.is_zero() {
+            duration = Duration::from_millis(16);
+        }
+
+        let tx = self.fired_tx.clone();
+        let join = if repeating {
+            self.handle.spawn(async move {
+                let interval = if duration.is_zero() {
+                    Duration::from_millis(0)
+                } else {
+                    duration
+                };
+                loop {
+                    sleep(interval).await;
+                    if tx.send(id).is_err() {
+                        break;
+                    }
+                }
+            })
+        } else {
+            self.handle.spawn(async move {
+                sleep(duration).await;
+                let _ = tx.send(id);
+            })
+        };
+
+        let entry = TimerEntry {
+            kind,
+            repeating,
+            task: Some(join),
+        };
+
+        self.timers.borrow_mut().insert(id, entry);
+        id
+    }
+
+    fn clear_timer(&self, id: u32) {
+        if let Some(entry) = self.timers.borrow_mut().remove(&id) {
+            if let Some(task) = entry.task {
+                task.abort();
+            }
+        }
+    }
+
+    fn run_due(&self, engine: &QuickJsEngine) -> Result<bool> {
+        let mut fired = Vec::new();
+        {
+            let mut rx = self.fired_rx.borrow_mut();
+            while let Ok(id) = rx.try_recv() {
+                fired.push(id);
+            }
+        }
+
+        let mut ran = false;
+        for id in fired {
+            let kind = {
+                let timers = self.timers.borrow();
+                timers.get(&id).map(|entry| entry.kind)
+            };
+
+            let Some(kind) = kind else {
+                continue;
+            };
+
+            self.invoke(engine, id, kind)?;
+            ran = true;
+
+            let should_remove = {
+                let timers = self.timers.borrow();
+                timers
+                    .get(&id)
+                    .map(|entry| !entry.repeating)
+                    .unwrap_or(true)
+            };
+
+            if should_remove {
+                if let Some(entry) = self.timers.borrow_mut().remove(&id) {
+                    if let Some(handle) = entry.task {
+                        handle.abort();
+                    }
+                }
+            }
+        }
+
+        Ok(ran)
+    }
+
+    fn invoke(&self, engine: &QuickJsEngine, id: u32, kind: TimerKind) -> Result<()> {
+        engine.with_context(|ctx| {
+            let global = ctx.globals();
+            let frontier: rquickjs::Object = global.get("frontier")?;
+            let invoke: rquickjs::Function = frontier.get("__invokeTimer")?;
+            let arg_count = if matches!(kind, TimerKind::AnimationFrame) {
+                2
+            } else {
+                1
+            };
+            let mut builder = FunctionArgs::new(ctx.clone(), arg_count);
+            builder.push_arg(id)?;
+            if matches!(kind, TimerKind::AnimationFrame) {
+                let timestamp = self.start.elapsed().as_secs_f64() * 1_000.0;
+                builder.push_arg(timestamp)?;
+            }
+            invoke.call_arg::<Value<'_>>(builder)?;
+            Ok(())
+        })
+    }
 }
 
 fn build_event_detail(event: &DomEvent) -> JsonValue {
@@ -816,7 +1065,11 @@ const DOM_BOOTSTRAP: &str = r#"
     function defineConstructor(name, proto) {
         const ctor = function () {};
         ctor.prototype = proto;
-        Object.defineProperty(proto, 'constructor', { value: ctor });
+        Object.defineProperty(proto, 'constructor', {
+            value: ctor,
+            configurable: true,
+            writable: true,
+        });
         global[name] = ctor;
     }
 
@@ -1490,65 +1743,45 @@ const DOM_BOOTSTRAP: &str = r#"
     defineConstructor('Document', DocumentProto);
     global.HTMLElement = global.Element;
 
-    Object.defineProperty(ElementProto, 'style', {
-        get() {
-            if (!this.__styleProxy) {
-                this.__styleProxy = createStyleProxy(this);
-            }
-            return this.__styleProxy;
-        },
-    });
-
-    Object.defineProperty(ElementProto, 'dataset', {
-        get() {
-            if (!this.__datasetProxy) {
-                this.__datasetProxy = new Proxy(
-                    {},
-                    {
-                        get: (_, prop) => this.getAttribute(`data-${String(prop)}`) ?? undefined,
-                        set: (_, prop, value) => {
-                            this.setAttribute(`data-${String(prop)}`, value);
-                            return true;
-                        },
-                        deleteProperty: (_, prop) => {
-                            this.removeAttribute(`data-${String(prop)}`);
-                            return true;
-                        },
-                        has: (_, prop) => this.hasAttribute(`data-${String(prop)}`),
-                        ownKeys: () => [],
-                        getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
-                    },
-                );
-            }
-            return this.__datasetProxy;
-        },
-    });
-
     function ensureDocument() {
-        const docHandle = global.__frontier_dom_document_handle();
-        let document = global.document;
-        if (typeof document !== 'object' || document === null) {
-            document = {};
+        try {
+            const docHandle = global.__frontier_dom_document_handle();
+            let document = global.document;
+            if (typeof document !== 'object' || document === null) {
+                document = {};
+            }
+            Object.setPrototypeOf(document, DocumentProto);
+            document[HANDLE] = String(docHandle);
+            global.document = document;
+            NODE_CACHE.set(String(docHandle), document);
+            return true;
+        } catch (err) {
+            return false;
         }
-        Object.setPrototypeOf(document, DocumentProto);
-        document[HANDLE] = String(docHandle);
-        global.document = document;
-        NODE_CACHE.set(String(docHandle), document);
     }
 
     function seedDocumentCache() {
-        const documentHandle = global.document[HANDLE];
+        const documentHandle = global.document && global.document[HANDLE];
+        if (!documentHandle) {
+            return;
+        }
         const children = mapHandles(global.__frontier_dom_child_nodes(documentHandle));
         for (const handle of children) {
             wrapHandle(handle);
         }
     }
 
-    ensureDocument();
-    seedDocumentCache();
+    function refreshDocument() {
+        if (ensureDocument()) {
+            seedDocumentCache();
+        }
+    }
+
+    refreshDocument();
 
     frontier.wrapHandle = wrapHandle;
     frontier.collectDescendants = collectDescendants;
+    frontier.__refreshDocument = refreshDocument;
 
     const CAPTURING_PHASE = 1;
     const AT_TARGET = 2;
@@ -1702,6 +1935,103 @@ const DOM_BOOTSTRAP: &str = r#"
             propagationStopped: event._propagationStopped,
         };
     };
+
+    const TIMER_STORE = new Map();
+
+    function toTimerId(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num) || num <= 0) {
+            return 0;
+        }
+        return Math.trunc(num);
+    }
+
+    function normalizeDelay(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num) || num < 0) {
+            return 0;
+        }
+        return num;
+    }
+
+    function ensureNativeTimer(name) {
+        const fn = global[name];
+        if (typeof fn !== 'function') {
+            throw new Error(`${name} bridge is missing`);
+        }
+        return fn;
+    }
+
+    const scheduleNativeTimer = ensureNativeTimer('__frontier_schedule_timer');
+    const cancelNativeTimer = ensureNativeTimer('__frontier_cancel_timer');
+
+    function scheduleTimer(kind, delay, repeating, callback, args) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('Timer callback must be a function');
+        }
+        const id = scheduleNativeTimer(kind, normalizeDelay(delay), !!repeating);
+        TIMER_STORE.set(id, { callback, args, kind, repeating: !!repeating });
+        return id;
+    }
+
+    frontier.__invokeTimer = function (id, timestamp) {
+        const entry = TIMER_STORE.get(id);
+        if (!entry) {
+            return;
+        }
+        if (entry.kind === 'animationFrame' && typeof timestamp === 'number') {
+            entry.callback.call(global, timestamp);
+        } else {
+            entry.callback.apply(global, entry.args);
+        }
+        if (!entry.repeating) {
+            TIMER_STORE.delete(id);
+        }
+    };
+
+    function cancelTimer(id) {
+        const timerId = toTimerId(id);
+        if (!timerId) {
+            return;
+        }
+        TIMER_STORE.delete(timerId);
+        cancelNativeTimer(timerId);
+    }
+
+    global.setTimeout = function (callback, delay, ...args) {
+        return scheduleTimer('timeout', delay ?? 0, false, callback, args);
+    };
+
+    global.setInterval = function (callback, delay, ...args) {
+        return scheduleTimer('interval', delay ?? 0, true, callback, args);
+    };
+
+    global.clearTimeout = cancelTimer;
+    global.clearInterval = cancelTimer;
+
+    global.requestAnimationFrame = function (callback) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('requestAnimationFrame callback must be a function');
+        }
+        return scheduleTimer('animationFrame', 16, false, callback, []);
+    };
+
+    global.cancelAnimationFrame = cancelTimer;
+
+    if (typeof global.queueMicrotask !== 'function') {
+        global.queueMicrotask = function (callback) {
+            if (typeof callback !== 'function') {
+                throw new TypeError('callback must be a function');
+            }
+            Promise.resolve()
+                .then(callback)
+                .catch((error) => {
+                    setTimeout(() => {
+                        throw error;
+                    }, 0);
+                });
+        };
+    }
 
     frontier.emitDomPatch = function (patch) {
         if (!patch || typeof patch !== 'object') {

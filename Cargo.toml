@@ -25,7 +25,7 @@ blitz-shell = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796
 anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", optional = true }
 anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"
@@ -61,7 +61,7 @@ keyboard-types = "0.7"
 
 [dev-dependencies]
 accesskit = "0.17"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "signal", "process"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "signal", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3.10"
 futures-util = "0.3"

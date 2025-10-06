@@ -46,6 +46,7 @@ impl JsPageRuntime {
         }
 
         let summary = run_inline_scripts(&self.environment, &inline_scripts)?;
+        self.environment.pump()?;
         self.executed_blocking = true;
         Ok(Some(summary))
     }

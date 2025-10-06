@@ -24,6 +24,22 @@ impl QuickJsEngine {
         Ok(engine)
     }
 
+    /// Execute any pending microtasks/jobs queued inside the QuickJS runtime until exhausted.
+    pub fn drain_jobs(&self) -> Result<bool> {
+        let mut executed = false;
+        loop {
+            let pending = self._runtime.execute_pending_job().map_err(|err| {
+                let message = err.0.with(|ctx| format!("{:#?}", ctx.catch()));
+                anyhow::anyhow!("quickjs pending job raised: {message}")
+            })?;
+            if !pending {
+                break;
+            }
+            executed = true;
+        }
+        Ok(executed)
+    }
+
     /// Evaluate a script and discard the result.
     pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
         self.eval_with::<()>(source, filename)
