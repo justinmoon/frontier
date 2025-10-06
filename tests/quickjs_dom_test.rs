@@ -5,8 +5,8 @@ use frontier::js::processor;
 use frontier::js::session::JsPageRuntime;
 use frontier::navigation::FetchedDocument;
 
-#[test]
-fn quickjs_demo_executes_script_and_mutates_dom() {
+#[tokio::test]
+async fn quickjs_demo_executes_script_and_mutates_dom() {
     let html = std::fs::read_to_string("assets/quickjs-demo.html").expect("demo asset");
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
     assert_eq!(scripts.len(), 1, "demo asset contains one inline script");
@@ -41,8 +41,8 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
     assert!(document.contents.contains("data-origin=\"quickjs-demo\""));
 }
 
-#[test]
-fn dom_bridge_updates_live_document() {
+#[tokio::test]
+async fn dom_bridge_updates_live_document() {
     let html = "<!DOCTYPE html><html><body><h1 id=\"message\">Loading…</h1></body></html>";
 
     let environment = JsDomEnvironment::new(html).expect("environment");

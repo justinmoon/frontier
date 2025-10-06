@@ -7,18 +7,35 @@ use rquickjs::{Ctx, Function, IntoJs};
 
 use super::dom::{DomPatch, DomState};
 use super::runtime::QuickJsEngine;
+use super::timers::TimerRegistry;
 
 pub struct JsDomEnvironment {
     engine: QuickJsEngine,
     state: Rc<RefCell<DomState>>,
+    #[allow(dead_code)]
+    timers: Rc<TimerRegistry>,
+    #[allow(dead_code)]
+    pending_timer_callbacks: Rc<RefCell<Vec<String>>>,
 }
 
 impl JsDomEnvironment {
     pub fn new(html: &str) -> Result<Self> {
         let state = Rc::new(RefCell::new(DomState::new(html)));
+        let timers = Rc::new(TimerRegistry::new());
+        let pending_timer_callbacks = Rc::new(RefCell::new(Vec::new()));
         let engine = QuickJsEngine::new()?;
         install_dom_bindings(&engine, Rc::clone(&state))?;
-        Ok(Self { engine, state })
+        install_timer_bindings(
+            &engine,
+            Rc::clone(&timers),
+            Rc::clone(&pending_timer_callbacks),
+        )?;
+        Ok(Self {
+            engine,
+            state,
+            timers,
+            pending_timer_callbacks,
+        })
     }
 
     pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
@@ -35,6 +52,32 @@ impl JsDomEnvironment {
 
     pub fn attach_document(&self, document: &mut BaseDocument) {
         self.state.borrow_mut().attach_document(document);
+    }
+
+    #[allow(dead_code)]
+    pub fn poll_timers(&self) -> Result<usize> {
+        let mut executed = 0;
+        while let Some(timer_msg) = self.timers.try_recv_timer() {
+            match timer_msg {
+                super::timers::TimerMessage::Fire { timer_id } => {
+                    // Look up the callback for this timer
+                    let callback_code = format!("__frontier_timer_fire({})", timer_id);
+                    self.pending_timer_callbacks
+                        .borrow_mut()
+                        .push(callback_code);
+                    executed += 1;
+                }
+            }
+        }
+
+        // Execute all pending callbacks
+        for callback in self.pending_timer_callbacks.borrow_mut().drain(..) {
+            if let Err(e) = self.engine.eval(&callback, "timer-callback.js") {
+                tracing::warn!(target = "quickjs", "Timer callback error: {}", e);
+            }
+        }
+
+        Ok(executed)
     }
 }
 
@@ -176,6 +219,50 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
         }
 
         ctx.eval::<(), _>(DOM_BOOTSTRAP.as_bytes())?;
+        Ok(())
+    })
+}
+
+fn install_timer_bindings(
+    engine: &QuickJsEngine,
+    timers: Rc<TimerRegistry>,
+    _pending_callbacks: Rc<RefCell<Vec<String>>>,
+) -> Result<()> {
+    engine.with_context(|ctx| {
+        let global = ctx.globals();
+
+        {
+            let timers_ref = Rc::clone(&timers);
+            let set_timeout =
+                Function::new(ctx.clone(), move |delay_ms: u32| -> rquickjs::Result<u32> {
+                    Ok(timers_ref.set_timeout(delay_ms))
+                })?
+                .with_name("__frontier_set_timeout")?;
+            global.set("__frontier_set_timeout", set_timeout)?;
+        }
+
+        {
+            let timers_ref = Rc::clone(&timers);
+            let set_interval =
+                Function::new(ctx.clone(), move |delay_ms: u32| -> rquickjs::Result<u32> {
+                    Ok(timers_ref.set_interval(delay_ms))
+                })?
+                .with_name("__frontier_set_interval")?;
+            global.set("__frontier_set_interval", set_interval)?;
+        }
+
+        {
+            let timers_ref = Rc::clone(&timers);
+            let clear_timer =
+                Function::new(ctx.clone(), move |timer_id: u32| -> rquickjs::Result<()> {
+                    timers_ref.clear_timer(timer_id);
+                    Ok(())
+                })?
+                .with_name("__frontier_clear_timer")?;
+            global.set("__frontier_clear_timer", clear_timer)?;
+        }
+
+        ctx.eval::<(), _>(TIMER_BOOTSTRAP.as_bytes())?;
         Ok(())
     })
 }
@@ -432,5 +519,63 @@ const DOM_BOOTSTRAP: &str = r#"
     };
 
     frontier.emitDomPatch = emitPatch;
+})();
+"#;
+
+const TIMER_BOOTSTRAP: &str = r#"
+(() => {
+    const global = globalThis;
+    const timerCallbacks = new Map();
+    let nextCallbackId = 1;
+
+    global.__frontier_timer_fire = function(timerId) {
+        const callback = timerCallbacks.get(timerId);
+        if (callback) {
+            try {
+                callback();
+            } catch (err) {
+                console.log('Timer callback error: ' + err);
+            }
+            // For setTimeout, remove the callback after execution
+            if (callback.__isTimeout) {
+                timerCallbacks.delete(timerId);
+            }
+        }
+    };
+
+    global.setTimeout = function(callback, delay) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('setTimeout callback must be a function');
+        }
+        const delayMs = Math.max(0, delay || 0);
+        const timerId = global.__frontier_set_timeout(delayMs);
+        callback.__isTimeout = true;
+        timerCallbacks.set(timerId, callback);
+        return timerId;
+    };
+
+    global.setInterval = function(callback, delay) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('setInterval callback must be a function');
+        }
+        const delayMs = Math.max(0, delay || 0);
+        const timerId = global.__frontier_set_interval(delayMs);
+        timerCallbacks.set(timerId, callback);
+        return timerId;
+    };
+
+    global.clearTimeout = function(timerId) {
+        if (timerId !== undefined && timerId !== null) {
+            global.__frontier_clear_timer(timerId);
+            timerCallbacks.delete(timerId);
+        }
+    };
+
+    global.clearInterval = function(timerId) {
+        if (timerId !== undefined && timerId !== null) {
+            global.__frontier_clear_timer(timerId);
+            timerCallbacks.delete(timerId);
+        }
+    };
 })();
 "#;
