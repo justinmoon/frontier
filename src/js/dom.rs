@@ -209,7 +209,11 @@ impl DomState {
     }
 
     pub fn to_html(&self) -> Result<String> {
-        self.snapshot.to_html()
+        if let Some(bridge) = self.bridge.as_ref() {
+            bridge.serialize_document()
+        } else {
+            self.snapshot.to_html()
+        }
     }
 }
 

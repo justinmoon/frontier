@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::ptr::NonNull;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use blitz_dom::node::NodeData;
 use blitz_dom::{local_name, ns, BaseDocument, DocumentMutator, LocalName, QualName};
+use html_escape::{encode_double_quoted_attribute, encode_text};
 
 use super::dom::DomPatch;
 
@@ -13,6 +15,10 @@ pub struct BlitzJsBridge {
 }
 
 impl BlitzJsBridge {
+    fn document(&self) -> &BaseDocument {
+        unsafe { self.document.as_ref() }
+    }
+
     pub fn new(document: &mut BaseDocument) -> Self {
         let pointer = NonNull::new(document as *mut BaseDocument).expect("document pointer");
         let mut id_index = HashMap::new();
@@ -152,5 +158,69 @@ impl BlitzJsBridge {
             DomPatch::InnerHtml { id, value } => self.set_inner_html(id, value),
             DomPatch::Attribute { id, name, value } => self.set_attribute(id, name, value),
         }
+    }
+
+    pub fn serialize_document(&self) -> Result<String> {
+        let doc = self.document();
+        let mut output = String::new();
+        output.push_str("<!DOCTYPE html>");
+        self.serialize_children(doc, doc.root_node().id, &mut output)?;
+        Ok(output)
+    }
+
+    fn serialize_children(
+        &self,
+        doc: &BaseDocument,
+        node_id: usize,
+        output: &mut String,
+    ) -> Result<()> {
+        let node = doc
+            .get_node(node_id)
+            .ok_or_else(|| anyhow!("missing node {node_id}"))?;
+        for child in &node.children {
+            self.serialize_node(doc, *child, output)?;
+        }
+        Ok(())
+    }
+
+    fn serialize_node(
+        &self,
+        doc: &BaseDocument,
+        node_id: usize,
+        output: &mut String,
+    ) -> Result<()> {
+        let node = doc
+            .get_node(node_id)
+            .ok_or_else(|| anyhow!("missing node {node_id}"))?;
+
+        match &node.data {
+            NodeData::Document | NodeData::AnonymousBlock(_) => {
+                self.serialize_children(doc, node_id, output)?;
+            }
+            NodeData::Element(data) => {
+                output.push('<');
+                output.push_str(data.name.local.as_ref());
+                for attr in data.attrs.iter() {
+                    output.push(' ');
+                    output.push_str(attr.name.local.as_ref());
+                    output.push_str("=\"");
+                    output.push_str(&encode_double_quoted_attribute(&attr.value).into_owned());
+                    output.push('"');
+                }
+                output.push('>');
+                self.serialize_children(doc, node_id, output)?;
+                output.push_str("</");
+                output.push_str(data.name.local.as_ref());
+                output.push('>');
+            }
+            NodeData::Text(text) => {
+                output.push_str(&encode_text(&text.content));
+            }
+            NodeData::Comment => {
+                output.push_str("<!-- -->");
+            }
+        }
+
+        Ok(())
     }
 }
