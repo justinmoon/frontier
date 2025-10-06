@@ -1,5 +1,5 @@
 use anyhow::{Context as AnyhowContext, Result};
-use rquickjs::{Context, Ctx, Function, Runtime};
+use rquickjs::{Context, Ctx, Error as JsError, Function, Runtime, Value};
 
 /// JavaScript runtime backed by QuickJS.
 ///
@@ -35,9 +35,22 @@ impl QuickJsEngine {
         V: for<'js> rquickjs::FromJs<'js>,
     {
         let script = Self::with_source_url(source, filename);
-        self.context
-            .with(move |ctx| ctx.eval::<V, _>(script))
-            .map_err(anyhow::Error::from)
+        let eval_result = self.context.with(|ctx| ctx.eval::<V, _>(script.clone()));
+
+        match eval_result {
+            Ok(value) => Ok(value),
+            Err(JsError::Exception) => {
+                let message = self
+                    .context
+                    .with(|ctx| -> Result<Option<String>, JsError> {
+                        Ok(capture_exception_message(&ctx))
+                    })
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| "QuickJS exception".to_string());
+                Err(anyhow::anyhow!(message))
+            }
+            Err(err) => Err(anyhow::Error::from(err)),
+        }
     }
 
     /// Provide access to the underlying QuickJS context for advanced integrations.
@@ -76,6 +89,11 @@ impl QuickJsEngine {
 fn log_from_js(message: String) -> rquickjs::Result<()> {
     tracing::info!(target = "quickjs", message = %message);
     Ok(())
+}
+
+fn capture_exception_message(ctx: &Ctx<'_>) -> Option<String> {
+    let value: Value = ctx.catch();
+    Some(format!("{:?}", value))
 }
 
 const CONSOLE_BOOTSTRAP: &str = r#"

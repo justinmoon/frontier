@@ -6,19 +6,12 @@ use blitz_dom::node::NodeData;
 use blitz_dom::{local_name, ns, BaseDocument, DocumentMutator, LocalName, QualName};
 use html_escape::{encode_double_quoted_attribute, encode_text};
 
-use super::dom::DomPatch;
-
-/// Applies DOM mutations emitted from QuickJS to the live Blitz document.
 pub struct BlitzJsBridge {
     document: NonNull<BaseDocument>,
     id_index: HashMap<String, usize>,
 }
 
 impl BlitzJsBridge {
-    fn document(&self) -> &BaseDocument {
-        unsafe { self.document.as_ref() }
-    }
-
     pub fn new(document: &mut BaseDocument) -> Self {
         let pointer = NonNull::new(document as *mut BaseDocument).expect("document pointer");
         let mut id_index = HashMap::new();
@@ -29,7 +22,7 @@ impl BlitzJsBridge {
         }
     }
 
-    fn with_document<T>(
+    fn with_document_mut<T>(
         &mut self,
         f: impl FnOnce(&mut BaseDocument, &mut HashMap<String, usize>) -> T,
     ) -> T {
@@ -37,6 +30,13 @@ impl BlitzJsBridge {
             let document = self.document.as_mut();
             f(document, &mut self.id_index)
         }
+    }
+
+    fn with_document_ref<T>(
+        &self,
+        f: impl FnOnce(&BaseDocument, &HashMap<String, usize>) -> T,
+    ) -> T {
+        unsafe { f(self.document.as_ref(), &self.id_index) }
     }
 
     fn reindex_internal(document: &mut BaseDocument, index: &mut HashMap<String, usize>) {
@@ -80,63 +80,68 @@ impl BlitzJsBridge {
         QualName::new(None, ns!(html), LocalName::from(name))
     }
 
-    fn set_text_content(&mut self, id: &str, value: &str) -> Result<()> {
-        self.with_document(|document, index| {
-            let Some(node_id) = Self::lookup_node_id_internal(document, index, id) else {
-                return Ok(());
+    pub fn find_node_by_html_id(&mut self, id: &str) -> Option<usize> {
+        self.with_document_mut(|document, index| Self::lookup_node_id_internal(document, index, id))
+    }
+
+    pub fn text_content(&self, node_id: usize) -> Option<String> {
+        self.with_document_ref(|document, _| {
+            document.get_node(node_id).map(|node| node.text_content())
+        })
+    }
+
+    pub fn inner_html(&self, node_id: usize) -> Result<String> {
+        self.with_document_ref(|document, _| {
+            let mut output = String::new();
+            self.serialize_children(document, node_id, &mut output)?;
+            Ok(output)
+        })
+    }
+
+    pub fn set_text_content(&mut self, node_id: usize, value: &str) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            let Some(node) = document.get_node(node_id) else {
+                return Err(anyhow!("missing node {node_id}"));
             };
-
-            let current = document
-                .get_node(node_id)
-                .map(|node| node.text_content())
-                .unwrap_or_default();
-            if current == value {
+            if node.text_content() == value {
                 return Ok(());
             }
 
-            let mut mutator = DocumentMutator::new(document);
-            mutator.remove_and_drop_all_children(node_id);
-            if !value.is_empty() {
-                let text_id = mutator.create_text_node(value);
-                mutator.append_children(node_id, &[text_id]);
+            {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.remove_and_drop_all_children(node_id);
+                if !value.is_empty() {
+                    let text_id = mutator.create_text_node(value);
+                    mutator.append_children(node_id, &[text_id]);
+                }
             }
 
+            Self::refresh_node_index_internal(document, index, node_id);
             Ok(())
         })
     }
 
-    fn set_inner_html(&mut self, id: &str, value: &str) -> Result<()> {
-        self.with_document(|document, index| {
-            let Some(node_id) = Self::lookup_node_id_internal(document, index, id) else {
-                return Ok(());
-            };
-
+    pub fn set_inner_html(&mut self, node_id: usize, value: &str) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(node_id)
+                .ok_or_else(|| anyhow!("missing node {node_id}"))?;
             {
                 let mut mutator = DocumentMutator::new(document);
                 mutator.set_inner_html(node_id, value);
             }
-
             Self::reindex_internal(document, index);
             Ok(())
         })
     }
 
-    fn set_attribute(&mut self, id: &str, name: &str, value: &str) -> Result<()> {
-        self.with_document(|document, index| {
-            let Some(node_id) = Self::lookup_node_id_internal(document, index, id) else {
-                return Ok(());
-            };
+    pub fn set_attribute(&mut self, node_id: usize, name: &str, value: &str) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(node_id)
+                .ok_or_else(|| anyhow!("missing node {node_id}"))?;
 
             let normalized = name.to_ascii_lowercase();
-            let attr_local = LocalName::from(&*normalized);
-            let existing = document
-                .get_node(node_id)
-                .and_then(|node| node.attr(attr_local.clone()));
-
-            if existing.map(|current| current == value).unwrap_or(false) {
-                return Ok(());
-            }
-
             {
                 let mut mutator = DocumentMutator::new(document);
                 mutator.set_attribute(node_id, Self::html_name(&normalized), value);
@@ -152,20 +157,13 @@ impl BlitzJsBridge {
         })
     }
 
-    pub fn apply_patch(&mut self, patch: &DomPatch) -> Result<()> {
-        match patch {
-            DomPatch::TextContent { id, value } => self.set_text_content(id, value),
-            DomPatch::InnerHtml { id, value } => self.set_inner_html(id, value),
-            DomPatch::Attribute { id, name, value } => self.set_attribute(id, name, value),
-        }
-    }
-
     pub fn serialize_document(&self) -> Result<String> {
-        let doc = self.document();
-        let mut output = String::new();
-        output.push_str("<!DOCTYPE html>");
-        self.serialize_children(doc, doc.root_node().id, &mut output)?;
-        Ok(output)
+        self.with_document_ref(|document, _| {
+            let mut output = String::new();
+            output.push_str("<!DOCTYPE html>");
+            self.serialize_children(document, document.root_node().id, &mut output)?;
+            Ok(output)
+        })
     }
 
     fn serialize_children(

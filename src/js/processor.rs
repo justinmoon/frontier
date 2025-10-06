@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use blitz_dom::DocumentConfig;
+use blitz_html::HtmlDocument;
 use kuchiki::parse_html;
 use kuchiki::traits::*;
 use tracing::{debug, error};
@@ -28,6 +30,16 @@ pub fn execute_inline_scripts(
 
     let environment = JsDomEnvironment::new(&document.contents)
         .context("failed to initialize QuickJS environment")?;
+
+    let mut temp_doc = HtmlDocument::from_html(
+        &document.contents,
+        DocumentConfig {
+            base_url: Some(document.base_url.clone()),
+            ..Default::default()
+        },
+    );
+    environment.attach_document(&mut *temp_doc);
+
     let summary = run_inline_scripts(&environment, &inline_scripts)?;
 
     finalize_environment(document, &environment, summary)

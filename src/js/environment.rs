@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context as AnyhowContext, Result};
+use anyhow::{anyhow, Result};
 use blitz_dom::BaseDocument;
 use rquickjs::{Ctx, Function, IntoJs};
 
-use super::dom::{DomPatch, DomSnapshot, DomState};
+use super::dom::{DomPatch, DomState};
 use super::runtime::QuickJsEngine;
 
 pub struct JsDomEnvironment {
@@ -15,9 +15,7 @@ pub struct JsDomEnvironment {
 
 impl JsDomEnvironment {
     pub fn new(html: &str) -> Result<Self> {
-        let snapshot =
-            DomSnapshot::parse(html).context("failed to parse HTML for QuickJS snapshot")?;
-        let state = Rc::new(RefCell::new(DomState::new(snapshot)));
+        let state = Rc::new(RefCell::new(DomState::new(html)));
         let engine = QuickJsEngine::new()?;
         install_dom_bindings(&engine, Rc::clone(&state))?;
         Ok(Self { engine, state })
@@ -44,44 +42,42 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
     engine.with_context(|ctx| {
         let global = ctx.globals();
 
-        // Element existence check
         {
             let state_ref = Rc::clone(&state);
-            let exists_fn =
-                Function::new(ctx.clone(), move |id: String| -> rquickjs::Result<bool> {
-                    Ok(state_ref.borrow().has_element(&id))
-                })?
-                .with_name("__frontier_dom_element_exists")?;
-            global.set("__frontier_dom_element_exists", exists_fn)?;
+            let get_handle = Function::new(
+                ctx.clone(),
+                move |id: String| -> rquickjs::Result<Option<String>> {
+                    Ok(state_ref.borrow_mut().handle_from_element_id(&id))
+                },
+            )?
+            .with_name("__frontier_dom_get_handle_by_id")?;
+            global.set("__frontier_dom_get_handle_by_id", get_handle)?;
         }
 
-        // text getter
         {
             let state_ref = Rc::clone(&state);
             let get_text = Function::new(
                 ctx.clone(),
-                move |id: String| -> rquickjs::Result<Option<String>> {
-                    Ok(state_ref.borrow().text_content(&id))
+                move |handle: String| -> rquickjs::Result<Option<String>> {
+                    Ok(state_ref.borrow().text_content(&handle))
                 },
             )?
             .with_name("__frontier_dom_get_text")?;
             global.set("__frontier_dom_get_text", get_text)?;
         }
 
-        // inner HTML getter
         {
             let state_ref = Rc::clone(&state);
             let get_html = Function::new(
                 ctx.clone(),
-                move |id: String| -> rquickjs::Result<Option<String>> {
-                    Ok(state_ref.borrow().inner_html(&id))
+                move |handle: String| -> rquickjs::Result<Option<String>> {
+                    Ok(state_ref.borrow().inner_html(&handle))
                 },
             )?
             .with_name("__frontier_dom_get_html")?;
             global.set("__frontier_dom_get_html", get_html)?;
         }
 
-        // apply patch helper
         {
             let state_ref = Rc::clone(&state);
             let apply_patch = Function::new(
@@ -111,6 +107,7 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
 
 fn dom_error<T>(ctx: &Ctx<'_>, err: anyhow::Error) -> rquickjs::Result<T> {
     tracing::error!(target = "quickjs", "DOM mutation failed: {err}");
+    println!("dom_error: {err}");
     let message = format!("DOM mutation failed: {err}");
     let value = message.into_js(ctx)?;
     Err(ctx.throw(value))
@@ -119,6 +116,7 @@ fn dom_error<T>(ctx: &Ctx<'_>, err: anyhow::Error) -> rquickjs::Result<T> {
 const DOM_BOOTSTRAP: &str = r#"
 (() => {
     const global = globalThis;
+    const HANDLE = Symbol('frontierHandle');
 
     function coercePatch(patch) {
         if (!patch || typeof patch !== 'object') {
@@ -127,17 +125,21 @@ const DOM_BOOTSTRAP: &str = r#"
         if (typeof patch.type !== 'string') {
             throw new TypeError('Patch requires a string "type" field');
         }
-        if (typeof patch.id !== 'string') {
-            throw new TypeError('Patch requires a string "id" field');
+        let rawHandle = patch.handle;
+        if (rawHandle === undefined && typeof patch.id === 'string') {
+            rawHandle = global.__frontier_dom_get_handle_by_id(patch.id);
         }
-        const result = { type: patch.type, id: patch.id };
+        if (rawHandle === undefined) {
+            throw new TypeError('Patch requires a "handle" field');
+        }
+        const formatted = { type: patch.type, handle: String(rawHandle) };
         if (patch.value !== undefined) {
-            result.value = String(patch.value);
+            formatted.value = String(patch.value);
         }
         if (patch.name !== undefined) {
-            result.name = String(patch.name);
+            formatted.name = String(patch.name);
         }
-        return result;
+        return formatted;
     }
 
     function ensureFrontier() {
@@ -148,54 +150,49 @@ const DOM_BOOTSTRAP: &str = r#"
     }
 
     function ensureDocument() {
-        if (typeof global.document === 'object' && global.document !== null) {
-            return;
+        if (typeof global.document !== 'object' || global.document === null) {
+            global.document = {};
         }
-        global.document = {};
     }
 
     ensureDocument();
+    const frontier = ensureFrontier();
 
-    global.document.getElementById = function getElementById(rawId) {
-        if (typeof rawId !== 'string') {
-            return null;
-        }
-        const id = rawId;
-        if (!global.__frontier_dom_element_exists(id)) {
-            return null;
-        }
-        const element = { id };
-        return new Proxy(element, {
-            get(target, prop) {
+    function createElementProxy(handle) {
+        const target = { [HANDLE]: handle };
+        return new Proxy(target, {
+            get(_, prop) {
+                if (prop === HANDLE) {
+                    return handle;
+                }
                 if (prop === 'textContent') {
-                    return global.__frontier_dom_get_text(target.id) ?? null;
+                    const value = global.__frontier_dom_get_text(handle);
+                    return value == null ? null : value;
                 }
                 if (prop === 'innerHTML') {
-                    return global.__frontier_dom_get_html(target.id) ?? null;
+                    const value = global.__frontier_dom_get_html(handle);
+                    return value == null ? null : value;
                 }
                 if (prop === 'setAttribute') {
                     return (name, value) => {
                         frontier.emitDomPatch({
                             type: 'attribute',
-                            id: target.id,
+                            handle,
                             name: String(name),
                             value: value == null ? '' : String(value),
                         });
                     };
                 }
-                if (prop === 'id') {
-                    return target.id;
-                }
                 if (prop === 'toString') {
-                    return () => `[Element ${target.id}]`;
+                    return () => `[Element ${handle}]`;
                 }
                 return undefined;
             },
-            set(target, prop, value) {
+            set(_, prop, value) {
                 if (prop === 'textContent') {
                     frontier.emitDomPatch({
                         type: 'text_content',
-                        id: target.id,
+                        handle,
                         value: value == null ? '' : String(value),
                     });
                     return true;
@@ -203,7 +200,7 @@ const DOM_BOOTSTRAP: &str = r#"
                 if (prop === 'innerHTML') {
                     frontier.emitDomPatch({
                         type: 'inner_html',
-                        id: target.id,
+                        handle,
                         value: value == null ? '' : String(value),
                     });
                     return true;
@@ -211,9 +208,19 @@ const DOM_BOOTSTRAP: &str = r#"
                 return false;
             },
         });
+    }
+
+    global.document.getElementById = function getElementById(rawId) {
+        if (typeof rawId !== 'string') {
+            return null;
+        }
+        const handle = global.__frontier_dom_get_handle_by_id(String(rawId));
+        if (typeof handle !== 'string') {
+            return null;
+        }
+        return createElementProxy(handle);
     };
 
-    const frontier = ensureFrontier();
     frontier.emitDomPatch = function emitDomPatch(patch) {
         const formatted = coercePatch(patch);
         return global.__frontier_dom_apply_patch(JSON.stringify(formatted));

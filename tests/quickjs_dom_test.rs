@@ -14,6 +14,8 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
     let mut runtime = JsPageRuntime::new(&html, &scripts)
         .expect("create runtime")
         .expect("runtime available for scripts");
+    let mut runtime_doc = HtmlDocument::from_html(&html, DocumentConfig::default());
+    runtime.attach_document(&mut *runtime_doc);
     let runtime_summary = runtime
         .run_blocking_scripts()
         .expect("runtime execution")
@@ -23,11 +25,6 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
     let mutated = runtime.document_html().expect("serialize runtime dom");
     assert!(mutated.contains("Hello from QuickJS!"));
     assert!(mutated.contains("data-origin=\"quickjs-demo\""));
-
-    {
-        let mut doc_for_runtime = HtmlDocument::from_html(&mutated, DocumentConfig::default());
-        runtime.attach_document(&mut *doc_for_runtime);
-    }
 
     let mut document = FetchedDocument {
         base_url: "file://demo".into(),
