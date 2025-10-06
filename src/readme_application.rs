@@ -210,7 +210,10 @@ impl ReadmeApplication {
         });
 
         if self.prepared_document.is_some() {
-            let mut doc = self.prepared_document.take().expect("prepared document present");
+            let mut doc = self
+                .prepared_document
+                .take()
+                .expect("prepared document present");
             self.apply_overlay_markup_to_doc(&mut doc);
             self.prepared_document = Some(doc);
         }

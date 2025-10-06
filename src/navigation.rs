@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use crate::blossom::{BlossomError, BlossomFetcher};
 use crate::input::{parse_input, ParseInputError, ParsedInput};
 use crate::js::processor;
-use crate::js::script::ScriptDescriptor;
+use crate::js::script::{ScriptDescriptor, ScriptExecution, ScriptKind, ScriptSource};
 use crate::nns::{
     ClaimLocation, NnsClaim, NnsResolver, PublishedTlsKey, ResolverError, ResolverOutput,
     ServiceEndpoint, TransportKind,
@@ -173,18 +173,22 @@ pub async fn execute_fetch(
     net_provider: Arc<Provider<Resource>>,
     blossom: Arc<BlossomFetcher>,
 ) -> Result<FetchedDocument, FetchError> {
-    match &request.source {
+    let mut document = match &request.source {
         FetchSource::LegacyUrl(url) => {
-            fetch_legacy_url(url, &request.display_url, net_provider).await
+            fetch_legacy_url(url, &request.display_url, Arc::clone(&net_provider)).await?
         }
         FetchSource::SecureHttp(http_request) => {
-            fetch_secure_http(http_request, &request.display_url).await
+            fetch_secure_http(http_request, &request.display_url).await?
         }
         FetchSource::Blossom(blossom_request) => {
             fetch_blossom_document(blossom_request, &request.display_url, Arc::clone(&blossom))
-                .await
+                .await?
         }
-    }
+    };
+
+    hydrate_blocking_scripts(&mut document, net_provider, blossom).await;
+
+    Ok(document)
 }
 
 async fn fetch_legacy_url(
@@ -602,6 +606,121 @@ fn collect_document_scripts(document: &mut FetchedDocument) {
     };
 
     document.scripts = scripts;
+}
+
+async fn hydrate_blocking_scripts(
+    document: &mut FetchedDocument,
+    net_provider: Arc<Provider<Resource>>,
+    blossom: Arc<BlossomFetcher>,
+) {
+    if document.scripts.is_empty() {
+        return;
+    }
+
+    let base_url = Url::parse(&document.base_url).ok();
+    let blossom_context = document.blossom.clone();
+
+    for descriptor in document.scripts.iter_mut() {
+        if descriptor.execution != ScriptExecution::Blocking
+            || descriptor.kind != ScriptKind::Classic
+        {
+            continue;
+        }
+
+        let src = match &descriptor.source {
+            ScriptSource::Inline { .. } => continue,
+            ScriptSource::External { src } => src.clone(),
+        };
+
+        let resolved = match resolve_script_url(&src, base_url.as_ref()) {
+            Ok(url) => url,
+            Err(err) => {
+                tracing::error!(
+                    target = "quickjs",
+                    src = %src,
+                    error = %err,
+                    "failed to resolve external script URL"
+                );
+                continue;
+            }
+        };
+
+        match fetch_script_source(
+            &resolved,
+            blossom_context.as_ref(),
+            Arc::clone(&net_provider),
+            Arc::clone(&blossom),
+        )
+        .await
+        {
+            Ok(code) => {
+                descriptor.source = ScriptSource::Inline { code };
+            }
+            Err(err) => {
+                tracing::error!(
+                    target = "quickjs",
+                    url = %resolved,
+                    error = %err,
+                    "failed to fetch blocking script"
+                );
+            }
+        }
+    }
+}
+
+fn resolve_script_url(src: &str, base: Option<&Url>) -> Result<Url, url::ParseError> {
+    match Url::parse(src) {
+        Ok(url) => Ok(url),
+        Err(url::ParseError::RelativeUrlWithoutBase) => {
+            if let Some(base) = base {
+                base.join(src)
+            } else {
+                Err(url::ParseError::RelativeUrlWithoutBase)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn fetch_script_source(
+    url: &Url,
+    blossom_ctx: Option<&BlossomDocumentContext>,
+    net_provider: Arc<Provider<Resource>>,
+    blossom: Arc<BlossomFetcher>,
+) -> Result<String, FetchError> {
+    match url.scheme() {
+        "http" | "https" | "file" | "data" => {
+            let (_final_url, bytes) = net_provider
+                .fetch_async(Request::get(url.clone()))
+                .await
+                .map_err(|err| FetchError::Network(format!("{err:?}")))?;
+            let code = std::str::from_utf8(&bytes)?.to_string();
+            Ok(code)
+        }
+        "blossom" => {
+            let ctx = blossom_ctx
+                .ok_or_else(|| FetchError::Network("missing Blossom context".to_string()))?;
+
+            let mut path = url.path().to_string();
+            if path.is_empty() {
+                path = "/".to_string();
+            }
+
+            let manifest = blossom.manifest_for(&ctx.pubkey_hex, &ctx.relays).await?;
+            let entry = manifest
+                .get(&path)
+                .cloned()
+                .ok_or_else(|| FetchError::Blossom(BlossomError::MissingPath(path.clone())))?;
+            let bytes = blossom
+                .fetch_blob_by_hash_with_tls(&ctx.servers, &entry.hash, ctx.tls_key.as_ref())
+                .await?;
+            let code = std::str::from_utf8(&bytes)?.to_string();
+            Ok(code)
+        }
+        other => Err(FetchError::Network(format!(
+            "unsupported script scheme: {other}"
+        ))),
+    }
 }
 
 #[cfg(test)]
