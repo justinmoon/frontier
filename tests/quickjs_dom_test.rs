@@ -11,11 +11,9 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
     assert_eq!(scripts.len(), 1, "demo asset contains one inline script");
 
-    let mut runtime = JsPageRuntime::new(&html, &scripts)
+    let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default())
         .expect("create runtime")
         .expect("runtime available for scripts");
-    let mut runtime_doc = HtmlDocument::from_html(&html, DocumentConfig::default());
-    runtime.attach_document(&mut *runtime_doc);
     let runtime_summary = runtime
         .run_blocking_scripts()
         .expect("runtime execution")
@@ -50,7 +48,7 @@ fn dom_bridge_updates_live_document() {
     let environment = JsDomEnvironment::new(html).expect("environment");
     let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
 
-    environment.attach_document(&mut *document);
+    environment.attach_document(&mut document);
     environment
         .eval(
             "document.getElementById('message').textContent = 'Updated';",
@@ -60,7 +58,7 @@ fn dom_bridge_updates_live_document() {
 
     let mut updated = None;
     {
-        let base: &mut BaseDocument = &mut *document;
+        let base: &mut BaseDocument = &mut document;
         let root_id = base.root_node().id;
         base.iter_subtree_mut(root_id, |node_id, doc| {
             if updated.is_some() {

@@ -112,7 +112,15 @@ impl ReadmeApplication {
         self.current_js_runtime = None;
 
         if !document.scripts.is_empty() {
-            match JsPageRuntime::new(&document.contents, &document.scripts) {
+            let config = DocumentConfig {
+                base_url: Some(document.base_url.clone()),
+                ua_stylesheets: None,
+                net_provider: Some(self.net_provider.clone()),
+                navigation_provider: Some(self.navigation_provider.clone()),
+                ..Default::default()
+            };
+
+            match JsPageRuntime::new(&document.contents, &document.scripts, config) {
                 Ok(Some(runtime)) => {
                     self.current_js_runtime = Some(runtime);
                 }
@@ -180,24 +188,12 @@ impl ReadmeApplication {
             return;
         };
 
-        let html = self.compose_html();
         let base_url = fetched.base_url.clone();
-        let mut doc = HtmlDocument::from_html(
-            &html,
-            DocumentConfig {
-                base_url: Some(base_url.clone()),
-                ua_stylesheets: None,
-                net_provider: Some(self.net_provider.clone()),
-                navigation_provider: Some(self.navigation_provider.clone()),
-                ..Default::default()
-            },
-        );
-
         let mut updated_contents: Option<String> = None;
         let mut summary_to_log: Option<ScriptExecutionSummary> = None;
 
+        // If we have a JS runtime, use its persistent document and execute scripts
         if let Some(runtime) = self.current_js_runtime.as_mut() {
-            runtime.attach_document(&mut *doc);
             match runtime.run_blocking_scripts() {
                 Ok(Some(summary)) => {
                     summary_to_log = Some(summary);
@@ -225,10 +221,38 @@ impl ReadmeApplication {
                     );
                 }
             }
-        }
 
-        self.window_mut()
-            .replace_document(Box::new(doc) as _, retain_scroll);
+            // Clone the runtime's document for rendering
+            // TODO: in the future we may want to avoid this clone and use the document directly
+            let doc_html = self.compose_html();
+            let doc = HtmlDocument::from_html(
+                &doc_html,
+                DocumentConfig {
+                    base_url: Some(base_url.clone()),
+                    ua_stylesheets: None,
+                    net_provider: Some(self.net_provider.clone()),
+                    navigation_provider: Some(self.navigation_provider.clone()),
+                    ..Default::default()
+                },
+            );
+            self.window_mut()
+                .replace_document(Box::new(doc) as _, retain_scroll);
+        } else {
+            // No JS runtime, render directly from HTML
+            let html = self.compose_html();
+            let doc = HtmlDocument::from_html(
+                &html,
+                DocumentConfig {
+                    base_url: Some(base_url.clone()),
+                    ua_stylesheets: None,
+                    net_provider: Some(self.net_provider.clone()),
+                    navigation_provider: Some(self.navigation_provider.clone()),
+                    ..Default::default()
+                },
+            );
+            self.window_mut()
+                .replace_document(Box::new(doc) as _, retain_scroll);
+        }
 
         if let Some(mutated) = updated_contents {
             if let Some(current) = self.current_document.as_mut() {

@@ -157,6 +157,187 @@ impl BlitzJsBridge {
         })
     }
 
+    pub fn get_attribute(&self, node_id: usize, name: &str) -> Option<String> {
+        self.with_document_ref(|document, _| {
+            let node = document.get_node(node_id)?;
+            let normalized = name.to_ascii_lowercase();
+            let local_name = LocalName::from(normalized.as_str());
+            node.attr(local_name).map(|s| s.to_string())
+        })
+    }
+
+    pub fn remove_attribute(&mut self, node_id: usize, name: &str) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(node_id)
+                .ok_or_else(|| anyhow!("missing node {node_id}"))?;
+
+            let normalized = name.to_ascii_lowercase();
+            {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.clear_attribute(node_id, Self::html_name(&normalized));
+            }
+
+            if normalized == "id" {
+                Self::reindex_internal(document, index);
+            } else {
+                Self::refresh_node_index_internal(document, index, node_id);
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn create_element(&mut self, tag_name: &str) -> Result<usize> {
+        self.with_document_mut(|document, _| {
+            let mut mutator = DocumentMutator::new(document);
+            let normalized = tag_name.to_ascii_lowercase();
+            let node_id = mutator.create_element(Self::html_name(&normalized), vec![]);
+            Ok(node_id)
+        })
+    }
+
+    pub fn create_text_node(&mut self, data: &str) -> usize {
+        self.with_document_mut(|document, _| {
+            let mut mutator = DocumentMutator::new(document);
+            mutator.create_text_node(data)
+        })
+    }
+
+    pub fn append_child(&mut self, parent_id: usize, child_id: usize) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(parent_id)
+                .ok_or_else(|| anyhow!("missing parent node {parent_id}"))?;
+            document
+                .get_node(child_id)
+                .ok_or_else(|| anyhow!("missing child node {child_id}"))?;
+
+            {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.append_children(parent_id, &[child_id]);
+            }
+
+            Self::reindex_internal(document, index);
+            Ok(())
+        })
+    }
+
+    pub fn insert_before(
+        &mut self,
+        parent_id: usize,
+        new_node_id: usize,
+        reference_node_id: Option<usize>,
+    ) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(parent_id)
+                .ok_or_else(|| anyhow!("missing parent node {parent_id}"))?;
+            document
+                .get_node(new_node_id)
+                .ok_or_else(|| anyhow!("missing new node {new_node_id}"))?;
+
+            if let Some(ref_id) = reference_node_id {
+                document
+                    .get_node(ref_id)
+                    .ok_or_else(|| anyhow!("missing reference node {ref_id}"))?;
+
+                let mut mutator = DocumentMutator::new(document);
+                mutator.insert_nodes_before(ref_id, &[new_node_id]);
+            } else {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.append_children(parent_id, &[new_node_id]);
+            }
+
+            Self::reindex_internal(document, index);
+            Ok(())
+        })
+    }
+
+    pub fn remove_child(&mut self, parent_id: usize, child_id: usize) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(parent_id)
+                .ok_or_else(|| anyhow!("missing parent node {parent_id}"))?;
+            document
+                .get_node(child_id)
+                .ok_or_else(|| anyhow!("missing child node {child_id}"))?;
+
+            {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.remove_and_drop_node(child_id);
+            }
+
+            Self::reindex_internal(document, index);
+            Ok(())
+        })
+    }
+
+    pub fn replace_child(
+        &mut self,
+        parent_id: usize,
+        new_child_id: usize,
+        old_child_id: usize,
+    ) -> Result<()> {
+        self.with_document_mut(|document, index| {
+            document
+                .get_node(parent_id)
+                .ok_or_else(|| anyhow!("missing parent node {parent_id}"))?;
+            document
+                .get_node(new_child_id)
+                .ok_or_else(|| anyhow!("missing new child node {new_child_id}"))?;
+            document
+                .get_node(old_child_id)
+                .ok_or_else(|| anyhow!("missing old child node {old_child_id}"))?;
+
+            {
+                let mut mutator = DocumentMutator::new(document);
+                mutator.insert_nodes_before(old_child_id, &[new_child_id]);
+                mutator.remove_and_drop_node(old_child_id);
+            }
+
+            Self::reindex_internal(document, index);
+            Ok(())
+        })
+    }
+
+    pub fn get_children(&self, node_id: usize) -> Option<Vec<usize>> {
+        self.with_document_ref(|document, _| {
+            let node = document.get_node(node_id)?;
+            Some(node.children.clone())
+        })
+    }
+
+    pub fn get_parent(&self, node_id: usize) -> Option<usize> {
+        self.with_document_ref(|document, _| {
+            let node = document.get_node(node_id)?;
+            node.parent
+        })
+    }
+
+    pub fn get_tag_name(&self, node_id: usize) -> Option<String> {
+        self.with_document_ref(|document, _| {
+            let node = document.get_node(node_id)?;
+            match &node.data {
+                NodeData::Element(data) => Some(data.name.local.to_string()),
+                _ => None,
+            }
+        })
+    }
+
+    pub fn get_node_type(&self, node_id: usize) -> Option<u8> {
+        self.with_document_ref(|document, _| {
+            let node = document.get_node(node_id)?;
+            Some(match &node.data {
+                NodeData::Element(_) => 1,        // ELEMENT_NODE
+                NodeData::Text(_) => 3,           // TEXT_NODE
+                NodeData::Comment => 8,           // COMMENT_NODE
+                NodeData::Document => 9,          // DOCUMENT_NODE
+                NodeData::AnonymousBlock(_) => 1, // Treat as element
+            })
+        })
+    }
+
     pub fn serialize_document(&self) -> Result<String> {
         self.with_document_ref(|document, _| {
             let mut output = String::new();
@@ -202,7 +383,7 @@ impl BlitzJsBridge {
                     output.push(' ');
                     output.push_str(attr.name.local.as_ref());
                     output.push_str("=\"");
-                    output.push_str(&encode_double_quoted_attribute(&attr.value).into_owned());
+                    output.push_str(&encode_double_quoted_attribute(&attr.value));
                     output.push('"');
                 }
                 output.push('>');

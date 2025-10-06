@@ -20,12 +20,44 @@ pub enum DomPatch {
         name: String,
         value: String,
     },
+    RemoveAttribute {
+        handle: String,
+        name: String,
+    },
+    CreateElement {
+        result_handle: String,
+        tag_name: String,
+    },
+    CreateTextNode {
+        result_handle: String,
+        data: String,
+    },
+    AppendChild {
+        parent_handle: String,
+        child_handle: String,
+    },
+    InsertBefore {
+        parent_handle: String,
+        new_handle: String,
+        reference_handle: Option<String>,
+    },
+    RemoveChild {
+        parent_handle: String,
+        child_handle: String,
+    },
+    ReplaceChild {
+        parent_handle: String,
+        new_handle: String,
+        old_handle: String,
+    },
 }
 
 pub struct DomState {
     initial_html: String,
     mutations: Vec<DomPatch>,
     bridge: Option<BlitzJsBridge>,
+    next_allocated_id: usize,
+    node_id_map: std::collections::HashMap<String, usize>,
 }
 
 impl DomState {
@@ -34,6 +66,8 @@ impl DomState {
             initial_html: html.to_string(),
             mutations: Vec::new(),
             bridge: None,
+            next_allocated_id: 1_000_000, // Start high to avoid conflicts with parsed nodes
+            node_id_map: std::collections::HashMap::new(),
         }
     }
 
@@ -63,24 +97,116 @@ impl DomState {
     }
 
     pub fn apply_patch(&mut self, patch: DomPatch) -> Result<bool> {
+        // Resolve handles before borrowing bridge
+        let resolved_ids = match &patch {
+            DomPatch::TextContent { handle, .. } => {
+                vec![parse_handle(handle)?]
+            }
+            DomPatch::InnerHtml { handle, .. } => {
+                vec![parse_handle(handle)?]
+            }
+            DomPatch::Attribute { handle, .. } => {
+                vec![parse_handle(handle)?]
+            }
+            DomPatch::RemoveAttribute { handle, .. } => {
+                vec![parse_handle(handle)?]
+            }
+            DomPatch::AppendChild {
+                parent_handle,
+                child_handle,
+            } => {
+                vec![
+                    self.resolve_handle(parent_handle)?,
+                    self.resolve_handle(child_handle)?,
+                ]
+            }
+            DomPatch::InsertBefore {
+                parent_handle,
+                new_handle,
+                reference_handle,
+            } => {
+                let mut ids = vec![
+                    self.resolve_handle(parent_handle)?,
+                    self.resolve_handle(new_handle)?,
+                ];
+                if let Some(ref_h) = reference_handle {
+                    ids.push(self.resolve_handle(ref_h)?);
+                }
+                ids
+            }
+            DomPatch::RemoveChild {
+                parent_handle,
+                child_handle,
+            } => {
+                vec![
+                    self.resolve_handle(parent_handle)?,
+                    self.resolve_handle(child_handle)?,
+                ]
+            }
+            DomPatch::ReplaceChild {
+                parent_handle,
+                new_handle,
+                old_handle,
+            } => {
+                vec![
+                    self.resolve_handle(parent_handle)?,
+                    self.resolve_handle(new_handle)?,
+                    self.resolve_handle(old_handle)?,
+                ]
+            }
+            _ => vec![],
+        };
+
         let bridge = self
             .bridge
             .as_mut()
             .ok_or_else(|| anyhow!("DOM bridge not attached"))?;
 
         match &patch {
-            DomPatch::TextContent { handle, value } => {
-                bridge.set_text_content(parse_handle(handle)?, value)?;
+            DomPatch::TextContent { value, .. } => {
+                bridge.set_text_content(resolved_ids[0], value)?;
             }
-            DomPatch::InnerHtml { handle, value } => {
-                bridge.set_inner_html(parse_handle(handle)?, value)?;
+            DomPatch::InnerHtml { value, .. } => {
+                bridge.set_inner_html(resolved_ids[0], value)?;
             }
-            DomPatch::Attribute {
-                handle,
-                name,
-                value,
+            DomPatch::Attribute { name, value, .. } => {
+                bridge.set_attribute(resolved_ids[0], name, value)?;
+            }
+            DomPatch::RemoveAttribute { name, .. } => {
+                bridge.remove_attribute(resolved_ids[0], name)?;
+            }
+            DomPatch::CreateElement {
+                result_handle,
+                tag_name,
             } => {
-                bridge.set_attribute(parse_handle(handle)?, name, value)?;
+                let node_id = bridge.create_element(tag_name)?;
+                self.node_id_map.insert(result_handle.clone(), node_id);
+            }
+            DomPatch::CreateTextNode {
+                result_handle,
+                data,
+            } => {
+                let node_id = bridge.create_text_node(data);
+                self.node_id_map.insert(result_handle.clone(), node_id);
+            }
+            DomPatch::AppendChild { .. } => {
+                bridge.append_child(resolved_ids[0], resolved_ids[1])?;
+            }
+            DomPatch::InsertBefore {
+                reference_handle, ..
+            } => {
+                let ref_id = if reference_handle.is_some() {
+                    Some(resolved_ids[2])
+                } else {
+                    None
+                };
+                bridge.insert_before(resolved_ids[0], resolved_ids[1], ref_id)?;
+            }
+            DomPatch::RemoveChild { .. } => {
+                bridge.remove_child(resolved_ids[0], resolved_ids[1])?;
+            }
+            DomPatch::ReplaceChild { .. } => {
+                bridge.replace_child(resolved_ids[0], resolved_ids[1], resolved_ids[2])?;
             }
         }
 
@@ -100,6 +226,57 @@ impl DomState {
         } else {
             Ok(self.initial_html.clone())
         }
+    }
+
+    pub fn get_attribute(&self, handle: &str, name: &str) -> Option<String> {
+        let bridge = self.bridge.as_ref()?;
+        let node_id = parse_handle(handle).ok()?;
+        bridge.get_attribute(node_id, name)
+    }
+
+    pub fn get_children(&self, handle: &str) -> Option<Vec<String>> {
+        let bridge = self.bridge.as_ref()?;
+        let node_id = parse_handle(handle).ok()?;
+        bridge
+            .get_children(node_id)
+            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
+    }
+
+    pub fn get_parent(&self, handle: &str) -> Option<String> {
+        let bridge = self.bridge.as_ref()?;
+        let node_id = parse_handle(handle).ok()?;
+        bridge.get_parent(node_id).map(|id| id.to_string())
+    }
+
+    pub fn get_tag_name(&self, handle: &str) -> Option<String> {
+        let bridge = self.bridge.as_ref()?;
+        let node_id = parse_handle(handle).ok()?;
+        bridge.get_tag_name(node_id)
+    }
+
+    pub fn get_node_type(&self, handle: &str) -> Option<u8> {
+        let bridge = self.bridge.as_ref()?;
+        let node_id = parse_handle(handle).ok()?;
+        bridge.get_node_type(node_id)
+    }
+
+    pub fn allocate_node_id(&mut self) -> Result<String> {
+        let allocated = format!("alloc_{}", self.next_allocated_id);
+        self.next_allocated_id += 1;
+        Ok(allocated)
+    }
+
+    fn resolve_handle(&self, handle: &str) -> Result<usize> {
+        // First try direct parse (for handles from getElementById etc)
+        if let Ok(id) = handle.parse::<usize>() {
+            return Ok(id);
+        }
+
+        // Otherwise lookup in the map (for allocated handles)
+        self.node_id_map
+            .get(handle)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown handle '{handle}'"))
     }
 }
 
