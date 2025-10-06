@@ -75,6 +75,25 @@ impl JsDomEnvironment {
         self.state.borrow_mut().attach_document(document);
     }
 
+    /// Dispatch a DOM event from Rust (e.g., from GUI clicks)
+    pub fn dispatch_event(&self, node_id: usize, event_type: &str, _event_data: &str) -> Result<()> {
+        let handle = node_id.to_string();
+        let script = format!(
+            r#"
+            (function() {{
+                var handle = '{}';
+                var proxy = __frontier_create_node_proxy(handle);
+                var event = new MouseEvent('{}', {{ bubbles: true, cancelable: true }});
+                proxy.dispatchEvent(event);
+            }})();
+            "#,
+            handle, event_type
+        );
+        self.engine.eval(&script, "rust-event-dispatch.js")?;
+        self.process_microtasks()?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn poll_timers(&self) -> Result<usize> {
         let mut executed = 0;
@@ -600,6 +619,19 @@ const DOM_BOOTSTRAP: &str = r#"
                 if (prop === 'removeEventListener') {
                     return (type, listener, options) => {
                         global.__frontier_remove_event_listener(publicHandle, type, listener, options);
+                    };
+                }
+                if (prop === 'addEventListener') {
+                    return (type, listener, options) => {
+                        if (typeof listener !== 'function') {
+                            throw new TypeError('Event listener must be a function');
+                        }
+                        return global.__frontier_add_event_listener(publicHandle, type, listener, options);
+                    };
+                }
+                if (prop === 'removeEventListener') {
+                    return (type, listener, options) => {
+                        return global.__frontier_remove_event_listener(publicHandle, type, listener, options);
                     };
                 }
                 if (prop === 'dispatchEvent') {

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Counter</title>
+</head>
+<body>
+    <h1>Counter: <span id="count">0</span></h1>
+    <button id="increment-btn">Increment</button>
+
+    <script>
+        var count = 0;
+        var btn = document.getElementById('increment-btn');
+        var countSpan = document.getElementById('count');
+
+        console.log('btn = ' + btn);
+        console.log('btn.addEventListener = ' + (typeof btn.addEventListener));
+        console.log('About to call addEventListener...');
+
+        btn.addEventListener('click', function() {
+            console.log('Button clicked! Count was: ' + count);
+            count = count + 1;
+            countSpan.textContent = count;
+            console.log('Count is now: ' + count);
+        });
+
+        console.log('Script loaded and listener attached');
+    </script>
+</body>
+</html>

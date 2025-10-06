@@ -21,7 +21,7 @@ use html_escape::encode_text;
 use tokio::runtime::Handle;
 use tracing::{error, info};
 use winit::application::ApplicationHandler;
-use winit::event::{Modifiers, StartCause, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Theme, WindowId};
@@ -122,6 +122,35 @@ impl ReadmeApplication {
     ) -> String {
         self.set_document(document);
         self.set_selection_prompt(prompt);
+
+        // Execute scripts and get rendered HTML
+        if let Some(runtime) = self.current_js_runtime.as_mut() {
+            match runtime.run_blocking_scripts() {
+                Ok(Some(summary)) => {
+                    tracing::info!(
+                        target: "quickjs",
+                        scripts = summary.executed_scripts,
+                        "executed scripts during initial load"
+                    );
+                    match runtime.document_html() {
+                        Ok(mutated) => {
+                            // Update the cached document with mutated HTML
+                            if let Some(current) = self.current_document.as_mut() {
+                                current.contents = mutated;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(target: "quickjs", error = %e, "failed to get mutated HTML");
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(target: "quickjs", error = %e, "failed to execute scripts");
+                }
+            }
+        }
+
         self.compose_html()
     }
 
@@ -628,6 +657,104 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                         }
                     }
                     _ => {}
+                }
+            }
+        }
+
+        // Handle mouse clicks for React event dispatch
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = &event
+        {
+            if let Some(runtime) = self.current_js_runtime.as_mut() {
+                // Get the view for this window
+                if let Some(view) = self.inner.windows.get(&window_id) {
+                    // Get clicked node via hit testing
+                    let (x, y) = view.mouse_pos;
+                    if let Some(hit_result) = view.doc.hit(x, y) {
+                        // Get element ID to find corresponding node in runtime
+                        let element_id = view.doc.tree().get(hit_result.node_id)
+                            .and_then(|node| node.attr(blitz_dom::local_name!("id")))
+                            .map(|s| s.to_string());
+
+                        tracing::info!(
+                            target: "react_click",
+                            view_node_id = hit_result.node_id,
+                            element_id = ?element_id,
+                            x = x,
+                            y = y,
+                            "click detected"
+                        );
+
+                        // Dispatch via element ID if available, otherwise try node ID directly
+                        let dispatch_code = if let Some(ref id) = element_id {
+                            format!(
+                                r#"
+                                (function() {{
+                                    var element = document.getElementById('{}');
+                                    if (element) {{
+                                        var event = new MouseEvent('click', {{ bubbles: true, cancelable: true }});
+                                        element.dispatchEvent(event);
+                                        return true;
+                                    }}
+                                    return false;
+                                }})();
+                                "#,
+                                id
+                            )
+                        } else {
+                            // Fallback: try the View's node ID directly (may not work if DOMs differ)
+                            format!(
+                                r#"
+                                (function() {{
+                                    var proxy = __frontier_create_node_proxy('{}');
+                                    if (proxy) {{
+                                        var event = new MouseEvent('click', {{ bubbles: true, cancelable: true }});
+                                        proxy.dispatchEvent(event);
+                                        return true;
+                                    }}
+                                    return false;
+                                }})();
+                                "#,
+                                hit_result.node_id
+                            )
+                        };
+
+                        match runtime.eval(&dispatch_code, "click-dispatch.js") {
+                            Ok(_) => {
+                                // JavaScript updated the runtime's DOM, now sync the View's DOM
+                                match runtime.document_html() {
+                                    Ok(updated_html) => {
+                                        // Update our cached document
+                                        if let Some(current) = self.current_document.as_mut() {
+                                            current.contents = updated_html.clone();
+                                        }
+
+                                        // Re-render with the updated HTML
+                                        self.render_current_document(true);
+
+                                        tracing::debug!(target: "react_click", "click dispatched, DOM updated");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            target: "react_click",
+                                            error = %e,
+                                            "failed to get updated HTML after click"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    target: "react_click",
+                                    error = %e,
+                                    "failed to dispatch click event"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

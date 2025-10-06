@@ -223,4 +223,14 @@ impl JsPageRuntime {
     pub fn into_document(self) -> Box<HtmlDocument> {
         self.document
     }
+
+    /// Dispatch a DOM event from native GUI (e.g., click events from Blitz)
+    pub fn dispatch_event(&mut self, node_id: usize, event_type: &str) -> Result<()> {
+        self.environment.dispatch_event(node_id, event_type, "")?;
+
+        // No need to apply mutations - they're already applied to the internal document
+        // The caller should call document_html() to get the updated HTML
+
+        Ok(())
+    }
 }
