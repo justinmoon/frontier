@@ -14,7 +14,6 @@
 /// 5. Verifies the count updates
 ///
 /// Run: cargo test --test react_gui_integration_test -- --nocapture
-
 use blitz_dom::net::Resource;
 use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
@@ -226,64 +225,22 @@ async fn react_counter_increments_on_click() {
 
     // Simulate clicking the button
     println!("\n📍 Simulating button click via JavaScript...");
-
-    // First, let's check what React event handlers are attached
-    println!("\n🔍 Checking React event handler setup...");
-    runtime.eval(
-        r#"
-        (function() {
-            var btn = document.getElementById('increment-btn');
-            var root = document.getElementById('root');
-
-            // Try to manually trigger onClick if it exists
-            if (btn.onClick) {
-                console.log('[DEBUG] btn.onClick exists');
-            }
-            if (btn.onclick) {
-                console.log('[DEBUG] btn.onclick exists');
-            }
-
-            // Check React's internal properties
-            var keys = [];
-            for (var key in btn) {
-                if (key.indexOf('react') !== -1 || key.indexOf('React') !== -1 || key.indexOf('__') === 0) {
-                    keys.push(key);
-                }
-            }
-            console.log('[DEBUG] React-related keys on button: ' + keys.join(', '));
-        })();
-        "#,
-        "check-event-setup.js",
-    ).ok();
-
     match runtime.eval(
         r#"
         (function() {
             var btn = document.getElementById('increment-btn');
             if (!btn) throw new Error('Button not found');
 
-            console.log('[TEST] btn handle: ' + btn['__frontier_handle']);
-
-            // Check for any React properties
-            var reactProps = [];
-            for (var key in btn) {
-                if (key.indexOf('react') !== -1 || key.indexOf('React') !== -1) {
-                    reactProps.push(key);
-                }
-            }
-            console.log('[TEST] btn React properties: ' + reactProps.join(', '));
-
             var countSpan = document.getElementById('count');
             var beforeText = countSpan.textContent;
 
             // Dispatch a proper click event
             var event = new MouseEvent('click', { bubbles: true, cancelable: true });
-            var dispatched = btn.dispatchEvent(event);
+            btn.dispatchEvent(event);
 
             var afterText = countSpan.textContent;
 
-            // Return diagnostic info
-            return 'before=' + beforeText + ' after=' + afterText + ' changed=' + (beforeText !== afterText);
+            return 'before=' + beforeText + ' after=' + afterText;
         })();
         "#,
         "simulate-click.js",
@@ -328,15 +285,14 @@ async fn react_counter_increments_on_click() {
         .expect("count should be a number");
 
     println!("  Updated count: {}", updated_count);
-
-    // NOTE: Counter doesn't increment yet - React's event handlers don't trigger re-renders
-    // This requires Phase 3: wiring React's SyntheticEvent system to trigger state updates
-    // For now, we've proven React loads, renders, and we can dispatch events
-
-    println!("\n✅ TEST PASSED - React loads, renders, and accepts user code!");
+    assert_eq!(
+        updated_count,
+        initial_count + 1,
+        "React onClick handler should increment the counter"
+    );
+    println!("\n✅ TEST PASSED - React counter increments via onClick!\n");
     println!("   ✓ React UMD bundles execute in QuickJS");
     println!("   ✓ React renders components with useState hooks");
     println!("   ✓ DOM elements exist with correct IDs");
-    println!("   ✓ Events can be dispatched");
-    println!("   ⏳ TODO: Wire React's event handlers to trigger re-renders");
+    println!("   ✓ React synthetic events trigger state updates");
 }

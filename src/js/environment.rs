@@ -202,6 +202,18 @@ fn install_dom_bindings(engine: &QuickJsEngine, state: Rc<RefCell<DomState>>) ->
 
         {
             let state_ref = Rc::clone(&state);
+            let normalize_handle = Function::new(
+                ctx.clone(),
+                move |handle: String| -> rquickjs::Result<Option<String>> {
+                    Ok(state_ref.borrow().normalize_public_handle(&handle))
+                },
+            )?
+            .with_name("__frontier_dom_normalize_handle")?;
+            global.set("__frontier_dom_normalize_handle", normalize_handle)?;
+        }
+
+        {
+            let state_ref = Rc::clone(&state);
             let get_tag = Function::new(
                 ctx.clone(),
                 move |handle: String| -> rquickjs::Result<Option<String>> {
@@ -389,48 +401,74 @@ const DOM_BOOTSTRAP: &str = r#"
     // Cache proxies by handle so React's internal properties persist
     const proxyCache = new Map();
 
+    function normalizeHandle(handle) {
+        if (typeof handle !== 'string') {
+            handle = String(handle);
+        }
+        if (typeof global.__frontier_dom_normalize_handle === 'function') {
+            try {
+                const result = global.__frontier_dom_normalize_handle(handle);
+                if (typeof result === 'string') {
+                    return result;
+                }
+            } catch (err) {
+                // Normalization failed, use original handle
+            }
+        }
+        return handle;
+    }
+
     function createNodeProxy(handle) {
-        // Return cached proxy if it exists
-        if (proxyCache.has(handle)) {
-            return proxyCache.get(handle);
+        const stringHandle = typeof handle === 'string' ? handle : String(handle);
+        if (proxyCache.has(stringHandle)) {
+            return proxyCache.get(stringHandle);
         }
 
-        const target = { [HANDLE]: handle };
+        const publicHandle = normalizeHandle(stringHandle);
+        if (proxyCache.has(publicHandle)) {
+            const existing = proxyCache.get(publicHandle);
+            if (publicHandle !== stringHandle) {
+                proxyCache.set(stringHandle, existing);
+            }
+            return existing;
+        }
+
+        const target = { [HANDLE]: publicHandle, __frontier_handle: publicHandle };
         const proxy = new Proxy(target, {
             get(target, prop) {
                 if (prop === HANDLE) {
-                    return handle;
+                    return publicHandle;
                 }
                 // Check if this property was previously set by JavaScript code
                 if (prop in target && prop !== HANDLE) {
                     return target[prop];
                 }
                 if (prop === 'textContent') {
-                    const value = global.__frontier_dom_get_text(handle);
+                    const value = global.__frontier_dom_get_text(publicHandle);
                     return value == null ? null : value;
                 }
                 if (prop === 'innerHTML') {
-                    const value = global.__frontier_dom_get_html(handle);
+                    const value = global.__frontier_dom_get_html(publicHandle);
                     return value == null ? null : value;
                 }
                 if (prop === 'tagName') {
-                    const value = global.__frontier_dom_get_tag_name(handle);
+                    const value = global.__frontier_dom_get_tag_name(publicHandle);
                     return value == null ? null : value.toUpperCase();
                 }
                 if (prop === 'nodeType') {
-                    return global.__frontier_dom_get_node_type(handle) || 1;
+                    return global.__frontier_dom_get_node_type(publicHandle) || 1;
                 }
                 if (prop === 'parentNode') {
-                    const parentHandle = global.__frontier_dom_get_parent(handle);
+                    const parentHandle = global.__frontier_dom_get_parent(publicHandle);
                     return parentHandle ? createNodeProxy(parentHandle) : null;
                 }
                 if (prop === 'childNodes' || prop === 'children') {
-                    const handles = global.__frontier_dom_get_children(handle);
+                    const handles = global.__frontier_dom_get_children(publicHandle);
                     if (!handles) return [];
                     return handles.map(h => createNodeProxy(h));
                 }
                 if (prop === 'firstChild') {
-                    const handles = global.__frontier_dom_get_children(handle);
+                    const handles = global.__frontier_dom_get_children(publicHandle);
                     if (!handles || handles.length === 0) return null;
                     return createNodeProxy(handles[0]);
                 }
@@ -448,14 +486,14 @@ const DOM_BOOTSTRAP: &str = r#"
                 }
                 if (prop === 'getAttribute') {
                     return (name) => {
-                        return global.__frontier_dom_get_attribute(handle, String(name)) || null;
+                        return global.__frontier_dom_get_attribute(publicHandle, String(name)) || null;
                     };
                 }
                 if (prop === 'setAttribute') {
                     return (name, value) => {
                         emitPatch({
                             type: 'attribute',
-                            handle,
+                            handle: publicHandle,
                             name: String(name),
                             value: value == null ? '' : String(value),
                         });
@@ -465,7 +503,7 @@ const DOM_BOOTSTRAP: &str = r#"
                     return (name) => {
                         emitPatch({
                             type: 'remove_attribute',
-                            handle,
+                            handle: publicHandle,
                             name: String(name),
                         });
                     };
@@ -479,10 +517,9 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof childHandle !== 'string') {
                             throw new TypeError('child must be a Frontier DOM node');
                         }
-                        console.log('[DOM] appendChild: parent=' + handle + ', child=' + childHandle);
                         emitPatch({
                             type: 'append_child',
-                            parent_handle: handle,
+                            parent_handle: publicHandle,
                             child_handle: childHandle,
                         });
                         return child;
@@ -497,10 +534,9 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof childHandle !== 'string') {
                             throw new TypeError('child must be a Frontier DOM node');
                         }
-                        console.log('[DOM] removeChild: parent=' + handle + ', child=' + childHandle);
                         emitPatch({
                             type: 'remove_child',
-                            parent_handle: handle,
+                            parent_handle: publicHandle,
                             child_handle: childHandle,
                         });
                         return child;
@@ -522,10 +558,9 @@ const DOM_BOOTSTRAP: &str = r#"
                                 throw new TypeError('refNode must be a Frontier DOM node');
                             }
                         }
-                        console.log('[DOM] insertBefore: parent=' + handle + ', new=' + newHandle + ', ref=' + refHandle);
                         emitPatch({
                             type: 'insert_before',
-                            parent_handle: handle,
+                            parent_handle: publicHandle,
                             new_handle: newHandle,
                             reference_handle: refHandle,
                         });
@@ -545,10 +580,9 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof newHandle !== 'string' || typeof oldHandle !== 'string') {
                             throw new TypeError('children must be Frontier DOM nodes');
                         }
-                        console.log('[DOM] replaceChild: parent=' + handle + ', new=' + newHandle + ', old=' + oldHandle);
                         emitPatch({
                             type: 'replace_child',
-                            parent_handle: handle,
+                            parent_handle: publicHandle,
                             new_handle: newHandle,
                             old_handle: oldHandle,
                         });
@@ -560,30 +594,29 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof listener !== 'function') {
                             throw new TypeError('Event listener must be a function');
                         }
-                        global.__frontier_add_event_listener(handle, type, listener, options);
+                        global.__frontier_add_event_listener(publicHandle, type, listener, options);
                     };
                 }
                 if (prop === 'removeEventListener') {
                     return (type, listener, options) => {
-                        global.__frontier_remove_event_listener(handle, type, listener, options);
+                        global.__frontier_remove_event_listener(publicHandle, type, listener, options);
                     };
                 }
                 if (prop === 'dispatchEvent') {
                     return (event) => {
-                        return global.__frontier_dispatch_event(handle, event);
+                        return global.__frontier_dispatch_event(publicHandle, event);
                     };
                 }
                 if (prop === 'toString') {
-                    return () => `[Node ${handle}]`;
+                    return () => `[Node ${publicHandle}]`;
                 }
                 return undefined;
             },
             set(target, prop, value) {
                 if (prop === 'textContent') {
-                    console.log('[DOM] Setting textContent on ' + handle + ' to: "' + value + '"');
                     emitPatch({
                         type: 'text_content',
-                        handle,
+                        handle: publicHandle,
                         value: value == null ? '' : String(value),
                     });
                     return true;
@@ -591,16 +624,13 @@ const DOM_BOOTSTRAP: &str = r#"
                 if (prop === 'innerHTML') {
                     emitPatch({
                         type: 'inner_html',
-                        handle,
+                        handle: publicHandle,
                         value: value == null ? '' : String(value),
                     });
                     return true;
                 }
                 // Allow setting arbitrary properties on the element
                 // (React and other libraries store internal data this way)
-                if (prop.indexOf('react') !== -1 || prop.indexOf('React') !== -1 || prop.indexOf('__') === 0) {
-                    console.log('[DOM] Setting property ' + prop + ' on ' + handle);
-                }
                 target[prop] = value;
                 return true;
             },
@@ -621,7 +651,10 @@ const DOM_BOOTSTRAP: &str = r#"
         });
 
         // Cache the proxy for this handle
-        proxyCache.set(handle, proxy);
+        proxyCache.set(publicHandle, proxy);
+        if (publicHandle !== stringHandle) {
+            proxyCache.set(stringHandle, proxy);
+        }
         return proxy;
     }
 
@@ -774,7 +807,26 @@ const EVENT_BOOTSTRAP: &str = r#"
     // Store event listeners per element: Map<handle, Map<eventType, Set<listener>>>
     const eventListeners = new Map();
 
+    function normalizeEventHandle(handle) {
+        if (typeof handle !== 'string') {
+            handle = String(handle);
+        }
+        if (typeof global.__frontier_dom_normalize_handle === 'function') {
+            try {
+                const result = global.__frontier_dom_normalize_handle(handle);
+                if (typeof result === 'string') {
+                    return result;
+                }
+            } catch (err) {
+                // Normalization failed, use original handle
+            }
+        }
+        return handle;
+    }
+
     global.__frontier_add_event_listener = function(handle, type, listener, options) {
+        handle = normalizeEventHandle(handle);
+
         if (!eventListeners.has(handle)) {
             eventListeners.set(handle, new Map());
         }
@@ -787,6 +839,7 @@ const EVENT_BOOTSTRAP: &str = r#"
     };
 
     global.__frontier_remove_event_listener = function(handle, type, listener, options) {
+        handle = normalizeEventHandle(handle);
         const handleListeners = eventListeners.get(handle);
         if (!handleListeners) return;
 
@@ -804,61 +857,54 @@ const EVENT_BOOTSTRAP: &str = r#"
     };
 
     global.__frontier_dispatch_event = function(handle, event) {
-        console.log('[EVENT] Dispatching ' + event.type + ' on handle=' + handle);
+        const startHandle = normalizeEventHandle(handle);
 
         // Set the event target
         if (!event.target) {
-            event.target = global.__frontier_create_node_proxy(handle);
+            event.target = global.__frontier_create_node_proxy(startHandle);
         }
         event.currentTarget = event.target;
 
         // Dispatch to the target element first
         const dispatchToElement = (elementHandle) => {
-            const handleListeners = eventListeners.get(elementHandle);
+            const normalized = normalizeEventHandle(elementHandle);
+            const handleListeners = eventListeners.get(normalized);
             if (!handleListeners) {
-                console.log('[EVENT]   No listeners on handle=' + elementHandle);
                 return;
             }
 
             const typeListeners = handleListeners.get(event.type);
             if (!typeListeners) {
-                console.log('[EVENT]   No ' + event.type + ' listeners on handle=' + elementHandle);
                 return;
             }
 
-            console.log('[EVENT]   Calling ' + typeListeners.size + ' listener(s) on handle=' + elementHandle);
-            console.log('[EVENT]   event.target=' + event.target + ', event.type=' + event.type);
-            event.currentTarget = global.__frontier_create_node_proxy(elementHandle);
+            event.currentTarget = global.__frontier_create_node_proxy(normalized);
 
             for (const listener of typeListeners) {
                 if (event.propagationStopped) break;
 
                 try {
-                    console.log('[EVENT]   About to call listener');
                     listener(event);
-                    console.log('[EVENT]   Listener returned');
                 } catch (err) {
-                    console.log('[EVENT] Event listener error: ' + err);
+                    console.log('Event listener error: ' + err);
                 }
             }
         };
 
         // Dispatch to target
-        dispatchToElement(handle);
+        dispatchToElement(startHandle);
 
         // Bubble up the tree if bubbles is true
         if (event.bubbles && !event.propagationStopped) {
-            console.log('[EVENT] Bubbling up from handle=' + handle);
-            let currentHandle = handle;
+            let currentHandle = startHandle;
 
             while (currentHandle) {
-                const parentHandle = global.__frontier_dom_get_parent(currentHandle);
-                if (!parentHandle) {
-                    console.log('[EVENT]   No more parents');
+                const parentHandleRaw = global.__frontier_dom_get_parent(currentHandle);
+                if (!parentHandleRaw) {
                     break;
                 }
 
-                console.log('[EVENT]   Bubbling to parent=' + parentHandle);
+                const parentHandle = normalizeEventHandle(parentHandleRaw);
                 dispatchToElement(parentHandle);
 
                 if (event.propagationStopped) break;
@@ -867,7 +913,6 @@ const EVENT_BOOTSTRAP: &str = r#"
 
             // Also dispatch to document if we haven't stopped propagation
             if (!event.propagationStopped) {
-                console.log('[EVENT]   Bubbling to document');
                 dispatchToElement('document');
             }
         }

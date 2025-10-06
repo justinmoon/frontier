@@ -58,6 +58,7 @@ pub struct DomState {
     bridge: Option<BlitzJsBridge>,
     next_allocated_id: usize,
     node_id_map: std::collections::HashMap<String, usize>,
+    node_handle_map: std::collections::HashMap<usize, String>,
 }
 
 impl DomState {
@@ -68,7 +69,42 @@ impl DomState {
             bridge: None,
             next_allocated_id: 1_000_000, // Start high to avoid conflicts with parsed nodes
             node_id_map: std::collections::HashMap::new(),
+            node_handle_map: std::collections::HashMap::new(),
         }
+    }
+
+    fn remember_handle(&mut self, handle: &str, node_id: usize) {
+        let handle_string = handle.to_string();
+        self.node_id_map.insert(handle_string.clone(), node_id);
+        self.node_handle_map.insert(node_id, handle_string);
+    }
+
+    fn forget_handle(&mut self, node_id: usize) {
+        if let Some(handle) = self.node_handle_map.remove(&node_id) {
+            self.node_id_map.remove(&handle);
+        }
+    }
+
+    fn public_handle_for(&self, node_id: usize) -> String {
+        self.node_handle_map
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_else(|| node_id.to_string())
+    }
+
+    pub fn normalize_public_handle(&self, handle: &str) -> Option<String> {
+        if handle == "document" {
+            return Some("document".to_string());
+        }
+
+        if self.node_id_map.contains_key(handle) {
+            return Some(handle.to_string());
+        }
+
+        handle
+            .parse::<usize>()
+            .ok()
+            .map(|node_id| self.public_handle_for(node_id))
     }
 
     pub fn attach_document(&mut self, document: &mut BaseDocument) {
@@ -81,7 +117,7 @@ impl DomState {
         let bridge = self.bridge.as_mut()?;
         bridge
             .find_node_by_html_id(id)
-            .map(|node_id| node_id.to_string())
+            .map(|node_id| self.public_handle_for(node_id))
     }
 
     pub fn text_content(&self, handle: &str) -> Option<String> {
@@ -180,14 +216,14 @@ impl DomState {
                 tag_name,
             } => {
                 let node_id = bridge.create_element(tag_name)?;
-                self.node_id_map.insert(result_handle.clone(), node_id);
+                self.remember_handle(result_handle, node_id);
             }
             DomPatch::CreateTextNode {
                 result_handle,
                 data,
             } => {
                 let node_id = bridge.create_text_node(data);
-                self.node_id_map.insert(result_handle.clone(), node_id);
+                self.remember_handle(result_handle, node_id);
             }
             DomPatch::AppendChild { .. } => {
                 bridge.append_child(resolved_ids[0], resolved_ids[1])?;
@@ -204,9 +240,11 @@ impl DomState {
             }
             DomPatch::RemoveChild { .. } => {
                 bridge.remove_child(resolved_ids[0], resolved_ids[1])?;
+                self.forget_handle(resolved_ids[1]);
             }
             DomPatch::ReplaceChild { .. } => {
                 bridge.replace_child(resolved_ids[0], resolved_ids[1], resolved_ids[2])?;
+                self.forget_handle(resolved_ids[2]);
             }
         }
 
@@ -239,13 +277,15 @@ impl DomState {
         let node_id = self.resolve_handle(handle).ok()?;
         bridge
             .get_children(node_id)
-            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
+            .map(|ids| ids.iter().map(|id| self.public_handle_for(*id)).collect())
     }
 
     pub fn get_parent(&self, handle: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
         let node_id = self.resolve_handle(handle).ok()?;
-        bridge.get_parent(node_id).map(|id| id.to_string())
+        bridge
+            .get_parent(node_id)
+            .map(|id| self.public_handle_for(id))
     }
 
     pub fn get_tag_name(&self, handle: &str) -> Option<String> {

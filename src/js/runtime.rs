@@ -119,7 +119,9 @@ impl QuickJsEngine {
 
                 // Add browser-like global polyfills
                 // React UMD bundles expect 'self' to be defined
-                ctx.eval::<(), _>("if (typeof self === 'undefined') { var self = globalThis; }".as_bytes())?;
+                ctx.eval::<(), _>(
+                    "if (typeof self === 'undefined') { var self = globalThis; }".as_bytes(),
+                )?;
 
                 // Add DOM constructor stubs that React expects
                 // React checks things like `x instanceof HTMLIFrameElement`
