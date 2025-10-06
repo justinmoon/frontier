@@ -120,7 +120,12 @@ impl ReadmeApplication {
                 ..Default::default()
             };
 
-            match JsPageRuntime::new(&document.contents, &document.scripts, config) {
+            match JsPageRuntime::new(
+                &document.contents,
+                &document.scripts,
+                config,
+                Some(self.net_provider.clone()),
+            ) {
                 Ok(Some(runtime)) => {
                     self.current_js_runtime = Some(runtime);
                 }

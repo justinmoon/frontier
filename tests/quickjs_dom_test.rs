@@ -11,7 +11,7 @@ async fn quickjs_demo_executes_script_and_mutates_dom() {
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
     assert_eq!(scripts.len(), 1, "demo asset contains one inline script");
 
-    let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default())
+    let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
         .expect("create runtime")
         .expect("runtime available for scripts");
     let runtime_summary = runtime

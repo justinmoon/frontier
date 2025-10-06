@@ -4,5 +4,6 @@ pub mod environment;
 pub mod processor;
 pub mod runtime;
 pub mod script;
+pub mod script_fetcher;
 pub mod session;
 pub mod timers;
