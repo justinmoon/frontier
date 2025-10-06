@@ -67,6 +67,8 @@ pub struct ReadmeApplication {
     current_input: String,
     current_document: Option<FetchedDocument>,
     current_js_runtime: Option<JsPageRuntime>,
+    prepared_document: Option<HtmlDocument>,
+    pending_script_summary: Option<ScriptExecutionSummary>,
     pending_document_reset: bool,
     chrome_handles: Option<DocumentChromeHandles>,
     last_overlay_markup: Option<String>,
@@ -94,6 +96,8 @@ impl ReadmeApplication {
             current_input: initial_input,
             current_document: None,
             current_js_runtime: None,
+            prepared_document: None,
+            pending_script_summary: None,
             pending_document_reset: false,
             chrome_handles: None,
             last_overlay_markup: None,
@@ -118,9 +122,14 @@ impl ReadmeApplication {
 
     fn set_document(&mut self, document: FetchedDocument) {
         self.current_js_runtime = None;
+        self.prepared_document = None;
+        self.pending_script_summary = None;
         self.pending_document_reset = true;
         self.chrome_handles = None;
         self.last_overlay_markup = None;
+        self.selection_overlay = None;
+
+        self.current_input = document.display_url.clone();
 
         if !document.scripts.is_empty() {
             match JsPageRuntime::new(&document.contents, &document.scripts) {
@@ -139,7 +148,46 @@ impl ReadmeApplication {
             }
         }
 
-        self.current_input = document.display_url.clone();
+        let base_url = document.base_url.clone();
+        let contents = document.contents.clone();
+
+        let mut prepared_doc = self.build_document_with_chrome(&contents, &base_url, None);
+
+        if let Some(runtime) = self.current_js_runtime.as_mut() {
+            runtime.attach_document(&mut *prepared_doc);
+            match runtime.run_blocking_scripts() {
+                Ok(Some(summary)) => {
+                    self.pending_script_summary = Some(summary);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        url = %base_url,
+                        error = %err,
+                        "failed to execute blocking scripts"
+                    );
+                }
+            }
+        }
+
+        match DocumentChromeHandles::compute(&mut prepared_doc) {
+            Ok(handles) => {
+                self.chrome_handles = Some(handles);
+                self.apply_overlay_markup_to_doc(&mut prepared_doc);
+            }
+            Err(err) => {
+                error!(
+                    target = "quickjs",
+                    url = %base_url,
+                    error = %err,
+                    "failed to compute chrome handles"
+                );
+                self.chrome_handles = None;
+            }
+        }
+
+        self.prepared_document = Some(prepared_doc);
         self.current_document = Some(document);
     }
 
@@ -160,9 +208,33 @@ impl ReadmeApplication {
                 .min(prompt.options.len().saturating_sub(1)),
             prompt,
         });
+
+        if self.prepared_document.is_some() {
+            let mut doc = self.prepared_document.take().expect("prepared document present");
+            self.apply_overlay_markup_to_doc(&mut doc);
+            self.prepared_document = Some(doc);
+        }
     }
 
     fn compose_html(&self) -> String {
+        if let Some(runtime) = &self.current_js_runtime {
+            match runtime.environment().document_html() {
+                Ok(html) => return html,
+                Err(err) => {
+                    if let Some(document) = &self.current_document {
+                        error!(
+                            target = "quickjs",
+                            url = %document.base_url,
+                            error = %err,
+                            "failed to serialize prepared document"
+                        );
+                    } else {
+                        error!(target = "quickjs", error = %err, "failed to serialize prepared document");
+                    }
+                }
+            }
+        }
+
         if let Some(document) = &self.current_document {
             let overlay_html = self
                 .selection_overlay
@@ -186,6 +258,53 @@ impl ReadmeApplication {
             .expect("window available")
     }
 
+    fn build_document_with_chrome(
+        &self,
+        contents: &str,
+        base_url: &str,
+        overlay_html: Option<&str>,
+    ) -> HtmlDocument {
+        let html = crate::wrap_with_url_bar(contents, &self.current_input, overlay_html);
+        HtmlDocument::from_html(
+            &html,
+            DocumentConfig {
+                base_url: Some(base_url.to_string()),
+                ua_stylesheets: None,
+                net_provider: Some(self.net_provider.clone()),
+                navigation_provider: Some(self.navigation_provider.clone()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn apply_overlay_markup_to_doc(&mut self, document: &mut HtmlDocument) {
+        let Some(handles) = self.chrome_handles else {
+            return;
+        };
+
+        let overlay_markup = self
+            .selection_overlay
+            .as_ref()
+            .map(render_selection_overlay);
+
+        if let Err(err) =
+            write_overlay_markup(document, handles.overlay_host, overlay_markup.as_deref())
+        {
+            if let Some(current) = &self.current_document {
+                error!(
+                    target = "quickjs",
+                    url = %current.base_url,
+                    error = %err,
+                    "failed to apply overlay markup"
+                );
+            } else {
+                error!(target = "quickjs", error = %err, "failed to apply overlay markup");
+            }
+        } else {
+            self.last_overlay_markup = overlay_markup;
+        }
+    }
+
     fn render_current_document(&mut self, retain_scroll: bool) {
         if self.current_document.is_none() {
             return;
@@ -206,65 +325,25 @@ impl ReadmeApplication {
                 (current.base_url.clone(), current.contents.clone())
             };
 
-            let html = crate::wrap_with_url_bar(&contents, &self.current_input, overlay_ref);
-            let mut doc = HtmlDocument::from_html(
-                &html,
-                DocumentConfig {
-                    base_url: Some(base_url.clone()),
-                    ua_stylesheets: None,
-                    net_provider: Some(self.net_provider.clone()),
-                    navigation_provider: Some(self.navigation_provider.clone()),
-                    ..Default::default()
-                },
-            );
+            let mut doc = self.prepared_document.take().unwrap_or_else(|| {
+                self.build_document_with_chrome(&contents, &base_url, overlay_ref)
+            });
 
-            let mut updated_contents: Option<String> = None;
-            let mut summary_to_log: Option<ScriptExecutionSummary> = None;
-
-            if let Some(runtime) = self.current_js_runtime.as_mut() {
-                runtime.attach_document(&mut *doc);
-                match runtime.run_blocking_scripts() {
-                    Ok(Some(summary)) => {
-                        summary_to_log = Some(summary);
-                        match runtime.document_html() {
-                            Ok(mutated) => {
-                                updated_contents = Some(mutated);
-                            }
-                            Err(err) => {
-                                error!(
-                                    target = "quickjs",
-                                    url = %base_url,
-                                    error = %err,
-                                    "failed to serialize document after scripts"
-                                );
-                            }
-                        }
-                    }
-                    Ok(None) => {}
+            if self.chrome_handles.is_none() {
+                match DocumentChromeHandles::compute(&mut doc) {
+                    Ok(handles) => self.chrome_handles = Some(handles),
                     Err(err) => {
                         error!(
                             target = "quickjs",
                             url = %base_url,
                             error = %err,
-                            "failed to execute blocking scripts"
+                            "failed to compute chrome handles"
                         );
                     }
                 }
             }
 
-            match DocumentChromeHandles::compute(&mut doc) {
-                Ok(handles) => {
-                    self.chrome_handles = Some(handles);
-                }
-                Err(err) => {
-                    error!(
-                        target = "quickjs",
-                        url = %base_url,
-                        error = %err,
-                        "failed to compute chrome handles"
-                    );
-                }
-            }
+            self.apply_overlay_markup_to_doc(&mut doc);
 
             let boxed_document: Box<dyn Document> = if let Some(environment) = self
                 .current_js_runtime
@@ -279,13 +358,7 @@ impl ReadmeApplication {
             self.window_mut()
                 .replace_document(boxed_document, retain_scroll);
 
-            if let Some(mutated) = updated_contents {
-                if let Some(current) = self.current_document.as_mut() {
-                    current.contents = mutated;
-                }
-            }
-
-            if let Some(summary) = summary_to_log {
+            if let Some(summary) = self.pending_script_summary.take() {
                 self.log_script_summary(&base_url, &summary);
             }
 
