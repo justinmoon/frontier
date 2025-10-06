@@ -9,8 +9,14 @@ Build a production-quality React runtime inside Frontier so real-world React 18 
 - `FetchedDocument` collects a full script manifest and `ReadmeApplication` instantiates `JsPageRuntime` so blocking inline scripts execute before first paint.
 - `JsDomEnvironment` now applies text/innerHTML/attribute writes directly to the live Blitz `BaseDocument` through `BlitzJsBridge`, eliminating Kuchiki snapshots for those paths.
 - Inline-script execution has parity in processor and runtime flows, with integration tests (`tests/quickjs_dom_test.rs`) covering QuickJS execution against real DOMs.
-- Milestones 1-2 complete: persistent runtime with document ownership and full DOM mutation/read API coverage.
-- Milestone 3 in progress: `setTimeout`/`setInterval` and `queueMicrotask` implemented; `requestAnimationFrame` deferred due to QuickJS evaluation issues (see `notes/requestAnimationFrame-issue.md`).
+- **Milestones 1-5 COMPLETE:**
+  1. ✅ Persistent runtime with document ownership
+  2. ✅ Full DOM mutation/read API coverage (createElement, appendChild, textContent, attributes, etc.)
+  3. ✅ Event loop with timers (`setTimeout`/`setInterval`), microtasks (`queueMicrotask`), and event listeners
+  4. ✅ Script loading pipeline with external script fetching and caching
+  5. ✅ React counter validation with state persistence and event handling
+- `requestAnimationFrame` deferred due to QuickJS evaluation issues (see `notes/requestAnimationFrame-issue.md`).
+- `innerHTML` setter not working correctly (see `notes/innerHTML-issue.md` for investigation notes).
 - Notes in `notes/` capture follow-ups identified while wiring the bridge so we can track tech debt as we go.
 
 ## Gaps To Close Before WPT
