@@ -33,6 +33,7 @@ impl JsDomEnvironment {
             Rc::clone(&pending_timer_callbacks),
         )?;
         install_microtask_bindings(&engine, Rc::clone(&microtask_queue))?;
+        install_event_bindings(&engine)?;
         Ok(Self {
             engine,
             state,
@@ -312,6 +313,13 @@ fn install_microtask_bindings(
     })
 }
 
+fn install_event_bindings(engine: &QuickJsEngine) -> Result<()> {
+    engine.with_context(|ctx| {
+        ctx.eval::<(), _>(EVENT_BOOTSTRAP.as_bytes())?;
+        Ok(())
+    })
+}
+
 fn dom_error<T>(ctx: &Ctx<'_>, err: anyhow::Error) -> rquickjs::Result<T> {
     tracing::error!(target = "quickjs", "DOM mutation failed: {err}");
     println!("dom_error: {err}");
@@ -505,6 +513,24 @@ const DOM_BOOTSTRAP: &str = r#"
                         return oldChild;
                     };
                 }
+                if (prop === 'addEventListener') {
+                    return (type, listener, options) => {
+                        if (typeof listener !== 'function') {
+                            throw new TypeError('Event listener must be a function');
+                        }
+                        global.__frontier_add_event_listener(handle, type, listener, options);
+                    };
+                }
+                if (prop === 'removeEventListener') {
+                    return (type, listener, options) => {
+                        global.__frontier_remove_event_listener(handle, type, listener, options);
+                    };
+                }
+                if (prop === 'dispatchEvent') {
+                    return (event) => {
+                        return global.__frontier_dispatch_event(handle, event);
+                    };
+                }
                 if (prop === 'toString') {
                     return () => `[Node ${handle}]`;
                 }
@@ -651,6 +677,85 @@ const MICROTASK_BOOTSTRAP: &str = r#"
         microtaskCallbacks.set(microtaskId, callback);
         // Queue the execution code
         global.__frontier_queue_microtask(`__frontier_execute_microtask(${microtaskId})`);
+    };
+})();
+"#;
+
+const EVENT_BOOTSTRAP: &str = r#"
+(() => {
+    const global = globalThis;
+
+    // Store event listeners per element: Map<handle, Map<eventType, Set<listener>>>
+    const eventListeners = new Map();
+
+    global.__frontier_add_event_listener = function(handle, type, listener, options) {
+        if (!eventListeners.has(handle)) {
+            eventListeners.set(handle, new Map());
+        }
+        const handleListeners = eventListeners.get(handle);
+
+        if (!handleListeners.has(type)) {
+            handleListeners.set(type, new Set());
+        }
+        handleListeners.get(type).add(listener);
+    };
+
+    global.__frontier_remove_event_listener = function(handle, type, listener, options) {
+        const handleListeners = eventListeners.get(handle);
+        if (!handleListeners) return;
+
+        const typeListeners = handleListeners.get(type);
+        if (!typeListeners) return;
+
+        typeListeners.delete(listener);
+
+        if (typeListeners.size === 0) {
+            handleListeners.delete(type);
+        }
+        if (handleListeners.size === 0) {
+            eventListeners.delete(handle);
+        }
+    };
+
+    global.__frontier_dispatch_event = function(handle, event) {
+        const handleListeners = eventListeners.get(handle);
+        if (!handleListeners) return true;
+
+        const typeListeners = handleListeners.get(event.type);
+        if (!typeListeners) return true;
+
+        let defaultPrevented = false;
+        for (const listener of typeListeners) {
+            try {
+                listener(event);
+                if (event.defaultPrevented) {
+                    defaultPrevented = true;
+                }
+            } catch (err) {
+                console.log('Event listener error: ' + err);
+            }
+        }
+
+        return !defaultPrevented;
+    };
+
+    // Simple Event constructor
+    global.Event = function(type, eventInitDict) {
+        this.type = type;
+        this.bubbles = eventInitDict && eventInitDict.bubbles || false;
+        this.cancelable = eventInitDict && eventInitDict.cancelable || false;
+        this.defaultPrevented = false;
+        this.propagationStopped = false;
+    };
+
+    global.Event.prototype.preventDefault = function() {
+        if (this.cancelable) {
+            this.defaultPrevented = true;
+        }
+    };
+
+    global.Event.prototype.stopPropagation = function() {
+        this.propagationStopped = true;
     };
 })();
 "#;
