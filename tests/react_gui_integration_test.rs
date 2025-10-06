@@ -37,6 +37,13 @@ fn create_file_provider() -> Arc<Provider<Resource>> {
 
 #[tokio::test]
 async fn react_counter_increments_on_click() {
+    // Set up tracing to see console.log output
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
     println!("\n🧪 React GUI Integration Test - Button Click");
     println!("============================================\n");
 
@@ -203,28 +210,88 @@ async fn react_counter_increments_on_click() {
     println!("✓ Initial count: {}", initial_count);
     assert_eq!(initial_count, 0, "Initial count should be 0");
 
+    // Check React's event system
+    println!("\n🔍 Checking React's event system...");
+    runtime.eval(
+        r#"
+        (function() {
+            var root = document.getElementById('root');
+            console.log('Root element: ' + root);
+            console.log('Root.__reactFiber: ' + (root.__reactFiber ? 'exists' : 'missing'));
+            console.log('Root._reactRootContainer: ' + (root._reactRootContainer ? 'exists' : 'missing'));
+        })();
+        "#,
+        "check-react-internals.js",
+    ).ok();
+
     // Simulate clicking the button
     println!("\n📍 Simulating button click via JavaScript...");
+
+    // First, let's check what React event handlers are attached
+    println!("\n🔍 Checking React event handler setup...");
+    runtime.eval(
+        r#"
+        (function() {
+            var btn = document.getElementById('increment-btn');
+            var root = document.getElementById('root');
+
+            // Try to manually trigger onClick if it exists
+            if (btn.onClick) {
+                console.log('[DEBUG] btn.onClick exists');
+            }
+            if (btn.onclick) {
+                console.log('[DEBUG] btn.onclick exists');
+            }
+
+            // Check React's internal properties
+            var keys = [];
+            for (var key in btn) {
+                if (key.indexOf('react') !== -1 || key.indexOf('React') !== -1 || key.indexOf('__') === 0) {
+                    keys.push(key);
+                }
+            }
+            console.log('[DEBUG] React-related keys on button: ' + keys.join(', '));
+        })();
+        "#,
+        "check-event-setup.js",
+    ).ok();
+
     match runtime.eval(
         r#"
         (function() {
             var btn = document.getElementById('increment-btn');
             if (!btn) throw new Error('Button not found');
-            console.log('Button found, onclick = ' + (typeof btn.onclick));
-            if (btn.onclick) {
-                btn.onclick();
-            } else {
-                var event = new MouseEvent('click', { bubbles: true });
-                btn.dispatchEvent(event);
+
+            console.log('[TEST] btn handle: ' + btn['__frontier_handle']);
+
+            // Check for any React properties
+            var reactProps = [];
+            for (var key in btn) {
+                if (key.indexOf('react') !== -1 || key.indexOf('React') !== -1) {
+                    reactProps.push(key);
+                }
             }
+            console.log('[TEST] btn React properties: ' + reactProps.join(', '));
+
+            var countSpan = document.getElementById('count');
+            var beforeText = countSpan.textContent;
+
+            // Dispatch a proper click event
+            var event = new MouseEvent('click', { bubbles: true, cancelable: true });
+            var dispatched = btn.dispatchEvent(event);
+
+            var afterText = countSpan.textContent;
+
+            // Return diagnostic info
+            return 'before=' + beforeText + ' after=' + afterText + ' changed=' + (beforeText !== afterText);
         })();
         "#,
         "simulate-click.js",
     ) {
         Ok(()) => println!("✓ Dispatched click event"),
         Err(e) => {
-            println!("✗ Click simulation failed: {}", e);
-            panic!("Click simulation failed: {}", e);
+            println!("✗ Click simulation failed: {:?}", e);
+            panic!("Click simulation failed: {:?}", e);
         }
     }
 

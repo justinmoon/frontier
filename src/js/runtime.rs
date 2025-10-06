@@ -219,11 +219,21 @@ const DOM_CONSTRUCTOR_POLYFILLS: &str = r#"
     }
 
     // Event constructors that React/JS might use
+    // Note: The full Event implementation is in the DOM bridge (environment.rs)
+    // These are just stubs for instanceof checks
     if (typeof global.Event === 'undefined') {
         global.Event = function Event(type, options) {
             this.type = type;
             this.bubbles = options && options.bubbles || false;
             this.cancelable = options && options.cancelable || false;
+            this.defaultPrevented = false;
+            this.propagationStopped = false;
+        };
+        global.Event.prototype.preventDefault = function() {
+            this.defaultPrevented = true;
+        };
+        global.Event.prototype.stopPropagation = function() {
+            this.propagationStopped = true;
         };
     }
     if (typeof global.MouseEvent === 'undefined') {
@@ -231,7 +241,10 @@ const DOM_CONSTRUCTOR_POLYFILLS: &str = r#"
             this.type = type;
             this.bubbles = options && options.bubbles || false;
             this.cancelable = options && options.cancelable || false;
+            this.defaultPrevented = false;
+            this.propagationStopped = false;
         };
+        global.MouseEvent.prototype = global.Event.prototype;
     }
 })();
 "#;

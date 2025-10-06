@@ -386,9 +386,17 @@ const DOM_BOOTSTRAP: &str = r#"
         return global.__frontier_dom_apply_patch(JSON.stringify(patch));
     }
 
+    // Cache proxies by handle so React's internal properties persist
+    const proxyCache = new Map();
+
     function createNodeProxy(handle) {
+        // Return cached proxy if it exists
+        if (proxyCache.has(handle)) {
+            return proxyCache.get(handle);
+        }
+
         const target = { [HANDLE]: handle };
-        return new Proxy(target, {
+        const proxy = new Proxy(target, {
             get(target, prop) {
                 if (prop === HANDLE) {
                     return handle;
@@ -471,6 +479,7 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof childHandle !== 'string') {
                             throw new TypeError('child must be a Frontier DOM node');
                         }
+                        console.log('[DOM] appendChild: parent=' + handle + ', child=' + childHandle);
                         emitPatch({
                             type: 'append_child',
                             parent_handle: handle,
@@ -488,6 +497,7 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof childHandle !== 'string') {
                             throw new TypeError('child must be a Frontier DOM node');
                         }
+                        console.log('[DOM] removeChild: parent=' + handle + ', child=' + childHandle);
                         emitPatch({
                             type: 'remove_child',
                             parent_handle: handle,
@@ -512,6 +522,7 @@ const DOM_BOOTSTRAP: &str = r#"
                                 throw new TypeError('refNode must be a Frontier DOM node');
                             }
                         }
+                        console.log('[DOM] insertBefore: parent=' + handle + ', new=' + newHandle + ', ref=' + refHandle);
                         emitPatch({
                             type: 'insert_before',
                             parent_handle: handle,
@@ -534,6 +545,7 @@ const DOM_BOOTSTRAP: &str = r#"
                         if (typeof newHandle !== 'string' || typeof oldHandle !== 'string') {
                             throw new TypeError('children must be Frontier DOM nodes');
                         }
+                        console.log('[DOM] replaceChild: parent=' + handle + ', new=' + newHandle + ', old=' + oldHandle);
                         emitPatch({
                             type: 'replace_child',
                             parent_handle: handle,
@@ -568,6 +580,7 @@ const DOM_BOOTSTRAP: &str = r#"
             },
             set(target, prop, value) {
                 if (prop === 'textContent') {
+                    console.log('[DOM] Setting textContent on ' + handle + ' to: "' + value + '"');
                     emitPatch({
                         type: 'text_content',
                         handle,
@@ -585,6 +598,9 @@ const DOM_BOOTSTRAP: &str = r#"
                 }
                 // Allow setting arbitrary properties on the element
                 // (React and other libraries store internal data this way)
+                if (prop.indexOf('react') !== -1 || prop.indexOf('React') !== -1 || prop.indexOf('__') === 0) {
+                    console.log('[DOM] Setting property ' + prop + ' on ' + handle);
+                }
                 target[prop] = value;
                 return true;
             },
@@ -603,6 +619,10 @@ const DOM_BOOTSTRAP: &str = r#"
                 return domProps.includes(prop);
             },
         });
+
+        // Cache the proxy for this handle
+        proxyCache.set(handle, proxy);
+        return proxy;
     }
 
     global.document.getElementById = function getElementById(rawId) {
@@ -653,6 +673,9 @@ const DOM_BOOTSTRAP: &str = r#"
     };
 
     frontier.emitDomPatch = emitPatch;
+
+    // Expose createNodeProxy for use by event system
+    global.__frontier_create_node_proxy = createNodeProxy;
 })();
 "#;
 
@@ -781,25 +804,75 @@ const EVENT_BOOTSTRAP: &str = r#"
     };
 
     global.__frontier_dispatch_event = function(handle, event) {
-        const handleListeners = eventListeners.get(handle);
-        if (!handleListeners) return true;
+        console.log('[EVENT] Dispatching ' + event.type + ' on handle=' + handle);
 
-        const typeListeners = handleListeners.get(event.type);
-        if (!typeListeners) return true;
+        // Set the event target
+        if (!event.target) {
+            event.target = global.__frontier_create_node_proxy(handle);
+        }
+        event.currentTarget = event.target;
 
-        let defaultPrevented = false;
-        for (const listener of typeListeners) {
-            try {
-                listener(event);
-                if (event.defaultPrevented) {
-                    defaultPrevented = true;
+        // Dispatch to the target element first
+        const dispatchToElement = (elementHandle) => {
+            const handleListeners = eventListeners.get(elementHandle);
+            if (!handleListeners) {
+                console.log('[EVENT]   No listeners on handle=' + elementHandle);
+                return;
+            }
+
+            const typeListeners = handleListeners.get(event.type);
+            if (!typeListeners) {
+                console.log('[EVENT]   No ' + event.type + ' listeners on handle=' + elementHandle);
+                return;
+            }
+
+            console.log('[EVENT]   Calling ' + typeListeners.size + ' listener(s) on handle=' + elementHandle);
+            console.log('[EVENT]   event.target=' + event.target + ', event.type=' + event.type);
+            event.currentTarget = global.__frontier_create_node_proxy(elementHandle);
+
+            for (const listener of typeListeners) {
+                if (event.propagationStopped) break;
+
+                try {
+                    console.log('[EVENT]   About to call listener');
+                    listener(event);
+                    console.log('[EVENT]   Listener returned');
+                } catch (err) {
+                    console.log('[EVENT] Event listener error: ' + err);
                 }
-            } catch (err) {
-                console.log('Event listener error: ' + err);
+            }
+        };
+
+        // Dispatch to target
+        dispatchToElement(handle);
+
+        // Bubble up the tree if bubbles is true
+        if (event.bubbles && !event.propagationStopped) {
+            console.log('[EVENT] Bubbling up from handle=' + handle);
+            let currentHandle = handle;
+
+            while (currentHandle) {
+                const parentHandle = global.__frontier_dom_get_parent(currentHandle);
+                if (!parentHandle) {
+                    console.log('[EVENT]   No more parents');
+                    break;
+                }
+
+                console.log('[EVENT]   Bubbling to parent=' + parentHandle);
+                dispatchToElement(parentHandle);
+
+                if (event.propagationStopped) break;
+                currentHandle = parentHandle;
+            }
+
+            // Also dispatch to document if we haven't stopped propagation
+            if (!event.propagationStopped) {
+                console.log('[EVENT]   Bubbling to document');
+                dispatchToElement('document');
             }
         }
 
-        return !defaultPrevented;
+        return !event.defaultPrevented;
     };
 
     // Simple Event constructor

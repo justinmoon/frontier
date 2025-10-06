@@ -26,7 +26,11 @@
                 h('h1', null, 'React Counter: ', h('span', { id: 'count' }, count)),
                 h('button', {
                     id: 'increment-btn',
-                    onClick: function() { setCount(count + 1); }
+                    onClick: function() {
+                        console.log('[REACT] onClick handler called! count=' + count);
+                        setCount(count + 1);
+                        console.log('[REACT] setCount called with ' + (count + 1));
+                    }
                 }, 'Increment')
             );
         }
