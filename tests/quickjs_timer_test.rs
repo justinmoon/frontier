@@ -121,3 +121,100 @@ async fn test_clear_timeout() {
         "DOM should not be updated after clearing timeout"
     );
 }
+
+#[tokio::test]
+async fn test_queue_microtask() {
+    let html = "<!DOCTYPE html><html><body><div id=\"result\">Initial</div></body></html>";
+    let environment = JsDomEnvironment::new(html).expect("environment");
+    let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
+    environment.attach_document(&mut document);
+
+    // Queue a microtask that modifies the DOM
+    environment
+        .eval(
+            r#"
+            queueMicrotask(function() {
+                document.getElementById('result').textContent = 'Microtask executed';
+            });
+        "#,
+            "microtask-test.js",
+        )
+        .expect("evaluate script");
+
+    // The microtask should have executed immediately after eval
+    let html = environment.document_html().expect("serialize");
+    assert!(
+        html.contains("Microtask executed"),
+        "Microtask should execute immediately after script"
+    );
+}
+
+#[tokio::test]
+async fn test_microtask_execution_order() {
+    let html = "<!DOCTYPE html><html><body><div id=\"result\"></div></body></html>";
+    let environment = JsDomEnvironment::new(html).expect("environment");
+    let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
+    environment.attach_document(&mut document);
+
+    // Queue multiple microtasks
+    environment
+        .eval(
+            r#"
+            let result = '';
+            queueMicrotask(function() {
+                result += '1';
+            });
+            queueMicrotask(function() {
+                result += '2';
+            });
+            queueMicrotask(function() {
+                result += '3';
+                document.getElementById('result').textContent = result;
+            });
+        "#,
+            "microtask-order-test.js",
+        )
+        .expect("evaluate script");
+
+    // All microtasks should have executed in order
+    let html = environment.document_html().expect("serialize");
+    assert!(
+        html.contains(">123<"),
+        "Microtasks should execute in order: {}",
+        html
+    );
+}
+
+#[tokio::test]
+async fn test_nested_microtasks() {
+    let html = "<!DOCTYPE html><html><body><div id=\"result\"></div></body></html>";
+    let environment = JsDomEnvironment::new(html).expect("environment");
+    let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
+    environment.attach_document(&mut document);
+
+    // Test microtask that queues another microtask
+    environment
+        .eval(
+            r#"
+            let result = '';
+            queueMicrotask(function() {
+                result += 'A';
+                queueMicrotask(function() {
+                    result += 'C';
+                    document.getElementById('result').textContent = result;
+                });
+                result += 'B';
+            });
+        "#,
+            "nested-microtask-test.js",
+        )
+        .expect("evaluate script");
+
+    // Nested microtask should also execute
+    let html = environment.document_html().expect("serialize");
+    assert!(
+        html.contains(">ABC<"),
+        "Nested microtasks should execute: {}",
+        html
+    );
+}

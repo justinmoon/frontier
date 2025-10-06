@@ -16,6 +16,7 @@ pub struct JsDomEnvironment {
     timers: Rc<TimerRegistry>,
     #[allow(dead_code)]
     pending_timer_callbacks: Rc<RefCell<Vec<String>>>,
+    microtask_queue: Rc<RefCell<Vec<String>>>,
 }
 
 impl JsDomEnvironment {
@@ -23,6 +24,7 @@ impl JsDomEnvironment {
         let state = Rc::new(RefCell::new(DomState::new(html)));
         let timers = Rc::new(TimerRegistry::new());
         let pending_timer_callbacks = Rc::new(RefCell::new(Vec::new()));
+        let microtask_queue = Rc::new(RefCell::new(Vec::new()));
         let engine = QuickJsEngine::new()?;
         install_dom_bindings(&engine, Rc::clone(&state))?;
         install_timer_bindings(
@@ -30,16 +32,34 @@ impl JsDomEnvironment {
             Rc::clone(&timers),
             Rc::clone(&pending_timer_callbacks),
         )?;
+        install_microtask_bindings(&engine, Rc::clone(&microtask_queue))?;
         Ok(Self {
             engine,
             state,
             timers,
             pending_timer_callbacks,
+            microtask_queue,
         })
     }
 
     pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
-        self.engine.eval(source, filename)
+        self.engine.eval(source, filename)?;
+        // Process any queued microtasks after script execution
+        self.process_microtasks()?;
+        Ok(())
+    }
+
+    fn process_microtasks(&self) -> Result<()> {
+        // Process all microtasks in the queue
+        while !self.microtask_queue.borrow().is_empty() {
+            let tasks: Vec<String> = self.microtask_queue.borrow_mut().drain(..).collect();
+            for task_code in tasks {
+                if let Err(e) = self.engine.eval(&task_code, "microtask.js") {
+                    tracing::warn!(target = "quickjs", "Microtask error: {}", e);
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn drain_mutations(&self) -> Vec<DomPatch> {
@@ -263,6 +283,31 @@ fn install_timer_bindings(
         }
 
         ctx.eval::<(), _>(TIMER_BOOTSTRAP.as_bytes())?;
+        Ok(())
+    })
+}
+
+fn install_microtask_bindings(
+    engine: &QuickJsEngine,
+    microtask_queue: Rc<RefCell<Vec<String>>>,
+) -> Result<()> {
+    engine.with_context(|ctx| {
+        let global = ctx.globals();
+
+        {
+            let queue_ref = Rc::clone(&microtask_queue);
+            let queue_microtask = Function::new(
+                ctx.clone(),
+                move |callback_code: String| -> rquickjs::Result<()> {
+                    queue_ref.borrow_mut().push(callback_code);
+                    Ok(())
+                },
+            )?
+            .with_name("__frontier_queue_microtask")?;
+            global.set("__frontier_queue_microtask", queue_microtask)?;
+        }
+
+        ctx.eval::<(), _>(MICROTASK_BOOTSTRAP.as_bytes())?;
         Ok(())
     })
 }
@@ -576,6 +621,36 @@ const TIMER_BOOTSTRAP: &str = r#"
             global.__frontier_clear_timer(timerId);
             timerCallbacks.delete(timerId);
         }
+    };
+})();
+"#;
+
+const MICROTASK_BOOTSTRAP: &str = r#"
+(() => {
+    const global = globalThis;
+    const microtaskCallbacks = new Map();
+    let nextMicrotaskId = 1;
+
+    global.__frontier_execute_microtask = function(microtaskId) {
+        const callback = microtaskCallbacks.get(microtaskId);
+        if (callback) {
+            microtaskCallbacks.delete(microtaskId);
+            try {
+                callback();
+            } catch (err) {
+                console.log('Microtask error: ' + err);
+            }
+        }
+    };
+
+    global.queueMicrotask = function(callback) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('queueMicrotask callback must be a function');
+        }
+        const microtaskId = nextMicrotaskId++;
+        microtaskCallbacks.set(microtaskId, callback);
+        // Queue the execution code
+        global.__frontier_queue_microtask(`__frontier_execute_microtask(${microtaskId})`);
     };
 })();
 "#;
