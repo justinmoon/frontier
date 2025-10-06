@@ -390,7 +390,9 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
     <main id="content" role="main" aria-label="Page content">
         {content}
     </main>
-    {overlay}
+    <div id="overlay-host">
+        {overlay}
+    </div>
 </body>
 </html>"#,
         display_url = display_url,

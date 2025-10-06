@@ -2192,6 +2192,7 @@ dependencies = [
  "html-escape",
  "hyper",
  "image",
+ "keyboard-types",
  "kuchiki",
  "nostr-sdk",
  "notify",

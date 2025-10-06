@@ -1,7 +1,9 @@
 pub mod bridge;
 pub mod dom;
 pub mod environment;
+pub mod events;
 pub mod processor;
 pub mod runtime;
+pub mod runtime_document;
 pub mod script;
 pub mod session;

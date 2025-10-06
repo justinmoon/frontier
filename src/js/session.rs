@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use anyhow::{Context as AnyhowContext, Result};
 use blitz_dom::BaseDocument;
 
@@ -7,7 +9,7 @@ use super::script::ScriptDescriptor;
 
 /// Owns the JavaScript runtime for a page and coordinates script execution.
 pub struct JsPageRuntime {
-    environment: JsDomEnvironment,
+    environment: Rc<JsDomEnvironment>,
     scripts: Vec<ScriptDescriptor>,
     executed_blocking: bool,
     bridge_attached: bool,
@@ -24,7 +26,7 @@ impl JsPageRuntime {
             .context("failed to create QuickJS environment for page runtime")?;
 
         Ok(Some(Self {
-            environment,
+            environment: Rc::new(environment),
             scripts: scripts.to_vec(),
             executed_blocking: false,
             bridge_attached: false,
@@ -63,5 +65,9 @@ impl JsPageRuntime {
         }
         self.environment.attach_document(document);
         self.bridge_attached = true;
+    }
+
+    pub fn environment(&self) -> Rc<JsDomEnvironment> {
+        Rc::clone(&self.environment)
     }
 }

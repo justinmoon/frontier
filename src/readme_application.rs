@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::blossom::BlossomFetcher;
 use crate::js::processor::ScriptExecutionSummary;
+use crate::js::runtime_document::RuntimeDocument;
 use crate::js::session::JsPageRuntime;
 use crate::navigation::{
     execute_fetch, prepare_navigation, BlossomFetchRequest, FetchRequest, FetchSource,
@@ -11,8 +12,9 @@ use crate::nns::{ClaimLocation, NnsClaim, NnsResolver};
 use crate::storage::unix_timestamp;
 use crate::WindowRenderer;
 use ::url::Url;
+use anyhow::Context;
 use blitz_dom::net::Resource;
-use blitz_dom::DocumentConfig;
+use blitz_dom::{local_name, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
@@ -65,6 +67,9 @@ pub struct ReadmeApplication {
     current_input: String,
     current_document: Option<FetchedDocument>,
     current_js_runtime: Option<JsPageRuntime>,
+    pending_document_reset: bool,
+    chrome_handles: Option<DocumentChromeHandles>,
+    last_overlay_markup: Option<String>,
     selection_overlay: Option<SelectionOverlayState>,
     url_history: Vec<String>,
 }
@@ -89,6 +94,9 @@ impl ReadmeApplication {
             current_input: initial_input,
             current_document: None,
             current_js_runtime: None,
+            pending_document_reset: false,
+            chrome_handles: None,
+            last_overlay_markup: None,
             selection_overlay: None,
             url_history: Vec::new(),
         }
@@ -110,6 +118,9 @@ impl ReadmeApplication {
 
     fn set_document(&mut self, document: FetchedDocument) {
         self.current_js_runtime = None;
+        self.pending_document_reset = true;
+        self.chrome_handles = None;
+        self.last_overlay_markup = None;
 
         if !document.scripts.is_empty() {
             match JsPageRuntime::new(&document.contents, &document.scripts) {
@@ -132,10 +143,10 @@ impl ReadmeApplication {
         self.current_document = Some(document);
     }
 
-    fn log_script_summary(&self, document: &FetchedDocument, summary: &ScriptExecutionSummary) {
+    fn log_script_summary(&self, base_url: &str, summary: &ScriptExecutionSummary) {
         info!(
             target = "quickjs",
-            url = %document.base_url,
+            url = %base_url,
             scripts = summary.executed_scripts,
             dom_mutations = summary.dom_mutations,
             "executed blocking inline scripts"
@@ -176,68 +187,181 @@ impl ReadmeApplication {
     }
 
     fn render_current_document(&mut self, retain_scroll: bool) {
-        let Some(fetched) = self.current_document.as_ref().cloned() else {
+        if self.current_document.is_none() {
             return;
-        };
+        }
 
-        let html = self.compose_html();
-        let base_url = fetched.base_url.clone();
-        let mut doc = HtmlDocument::from_html(
-            &html,
-            DocumentConfig {
-                base_url: Some(base_url.clone()),
-                ua_stylesheets: None,
-                net_provider: Some(self.net_provider.clone()),
-                navigation_provider: Some(self.navigation_provider.clone()),
-                ..Default::default()
-            },
-        );
+        let overlay_markup = self
+            .selection_overlay
+            .as_ref()
+            .map(render_selection_overlay);
+        let overlay_ref = overlay_markup.as_deref();
 
-        let mut updated_contents: Option<String> = None;
-        let mut summary_to_log: Option<ScriptExecutionSummary> = None;
+        if self.pending_document_reset {
+            let (base_url, contents) = {
+                let current = self
+                    .current_document
+                    .as_ref()
+                    .expect("current_document must be set");
+                (current.base_url.clone(), current.contents.clone())
+            };
 
-        if let Some(runtime) = self.current_js_runtime.as_mut() {
-            runtime.attach_document(&mut *doc);
-            match runtime.run_blocking_scripts() {
-                Ok(Some(summary)) => {
-                    summary_to_log = Some(summary);
-                    match runtime.document_html() {
-                        Ok(mutated) => {
-                            updated_contents = Some(mutated);
-                        }
-                        Err(err) => {
-                            error!(
-                                target = "quickjs",
-                                url = %base_url,
-                                error = %err,
-                                "failed to serialize document after scripts"
-                            );
+            let html = crate::wrap_with_url_bar(&contents, &self.current_input, overlay_ref);
+            let mut doc = HtmlDocument::from_html(
+                &html,
+                DocumentConfig {
+                    base_url: Some(base_url.clone()),
+                    ua_stylesheets: None,
+                    net_provider: Some(self.net_provider.clone()),
+                    navigation_provider: Some(self.navigation_provider.clone()),
+                    ..Default::default()
+                },
+            );
+
+            let mut updated_contents: Option<String> = None;
+            let mut summary_to_log: Option<ScriptExecutionSummary> = None;
+
+            if let Some(runtime) = self.current_js_runtime.as_mut() {
+                runtime.attach_document(&mut *doc);
+                match runtime.run_blocking_scripts() {
+                    Ok(Some(summary)) => {
+                        summary_to_log = Some(summary);
+                        match runtime.document_html() {
+                            Ok(mutated) => {
+                                updated_contents = Some(mutated);
+                            }
+                            Err(err) => {
+                                error!(
+                                    target = "quickjs",
+                                    url = %base_url,
+                                    error = %err,
+                                    "failed to serialize document after scripts"
+                                );
+                            }
                         }
                     }
+                    Ok(None) => {}
+                    Err(err) => {
+                        error!(
+                            target = "quickjs",
+                            url = %base_url,
+                            error = %err,
+                            "failed to execute blocking scripts"
+                        );
+                    }
                 }
-                Ok(None) => {}
+            }
+
+            match DocumentChromeHandles::compute(&mut doc) {
+                Ok(handles) => {
+                    self.chrome_handles = Some(handles);
+                }
                 Err(err) => {
                     error!(
                         target = "quickjs",
                         url = %base_url,
                         error = %err,
-                        "failed to execute blocking scripts"
+                        "failed to compute chrome handles"
                     );
                 }
             }
+
+            let boxed_document: Box<dyn Document> = if let Some(environment) = self
+                .current_js_runtime
+                .as_ref()
+                .map(|runtime| runtime.environment())
+            {
+                Box::new(RuntimeDocument::new(doc, environment)) as Box<dyn Document>
+            } else {
+                Box::new(doc) as Box<dyn Document>
+            };
+
+            self.window_mut()
+                .replace_document(boxed_document, retain_scroll);
+
+            if let Some(mutated) = updated_contents {
+                if let Some(current) = self.current_document.as_mut() {
+                    current.contents = mutated;
+                }
+            }
+
+            if let Some(summary) = summary_to_log {
+                self.log_script_summary(&base_url, &summary);
+            }
+
+            self.last_overlay_markup = overlay_markup.clone();
+            self.pending_document_reset = false;
+            return;
         }
 
-        self.window_mut()
-            .replace_document(Box::new(doc) as _, retain_scroll);
+        let base_url = self
+            .current_document
+            .as_ref()
+            .map(|doc| doc.base_url.clone())
+            .unwrap_or_default();
+        let overlay_changed = self.last_overlay_markup.as_deref() != overlay_ref;
 
-        if let Some(mutated) = updated_contents {
-            if let Some(current) = self.current_document.as_mut() {
-                current.contents = mutated;
+        let mut updated_handles: Option<DocumentChromeHandles> = None;
+        let overlay_update = if overlay_changed {
+            let existing_handles = self.chrome_handles;
+            if self.current_js_runtime.is_some() {
+                {
+                    let view = self.window_mut();
+                    let doc = view.downcast_doc_mut::<RuntimeDocument>();
+                    let html_doc = doc.html_mut();
+                    match ensure_handles(existing_handles, html_doc) {
+                        Ok((handles, should_store)) => {
+                            if should_store {
+                                updated_handles = Some(handles);
+                            }
+                            write_overlay_markup(html_doc, handles.overlay_host, overlay_ref)
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            } else {
+                {
+                    let view = self.window_mut();
+                    let doc = view.downcast_doc_mut::<HtmlDocument>();
+                    match ensure_handles(existing_handles, doc) {
+                        Ok((handles, should_store)) => {
+                            if should_store {
+                                updated_handles = Some(handles);
+                            }
+                            write_overlay_markup(doc, handles.overlay_host, overlay_ref)
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            }
+        } else {
+            Ok(())
+        };
+
+        if let Some(handles) = updated_handles {
+            self.chrome_handles = Some(handles);
+        }
+
+        match overlay_update {
+            Ok(()) => {
+                if overlay_changed {
+                    self.last_overlay_markup = overlay_markup.clone();
+                }
+            }
+            Err(err) => {
+                error!(
+                    target = "quickjs",
+                    url = %base_url,
+                    error = %err,
+                    "failed to update overlay markup"
+                );
             }
         }
 
-        if let Some(summary) = summary_to_log {
-            self.log_script_summary(&fetched, &summary);
+        {
+            let view = self.window_mut();
+            view.poll();
+            view.request_redraw();
         }
     }
 
@@ -578,6 +702,81 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
             other => self.inner.user_event(event_loop, other),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DocumentChromeHandles {
+    overlay_host: usize,
+    content_root: usize,
+    url_input: usize,
+}
+
+impl DocumentChromeHandles {
+    fn compute(document: &mut HtmlDocument) -> anyhow::Result<Self> {
+        let overlay_host =
+            find_node_by_id(document, "overlay-host").context("overlay host element missing")?;
+        let content_root =
+            find_node_by_id(document, "content").context("content container missing")?;
+        let url_input = find_node_by_id(document, "url-input").context("url input missing")?;
+
+        Ok(Self {
+            overlay_host,
+            content_root,
+            url_input,
+        })
+    }
+}
+
+fn ensure_handles(
+    existing: Option<DocumentChromeHandles>,
+    document: &mut HtmlDocument,
+) -> anyhow::Result<(DocumentChromeHandles, bool)> {
+    if let Some(handles) = existing {
+        let overlay_ok = document.get_node(handles.overlay_host).is_some();
+        let content_ok = document.get_node(handles.content_root).is_some();
+        let input_ok = document.get_node(handles.url_input).is_some();
+        if overlay_ok && content_ok && input_ok {
+            return Ok((handles, false));
+        }
+    }
+
+    let handles = DocumentChromeHandles::compute(document)?;
+    Ok((handles, true))
+}
+
+fn write_overlay_markup(
+    document: &mut HtmlDocument,
+    overlay_host: usize,
+    overlay_html: Option<&str>,
+) -> anyhow::Result<()> {
+    if document.get_node(overlay_host).is_none() {
+        anyhow::bail!("overlay host node {overlay_host} missing");
+    }
+
+    {
+        let mut mutator = document.mutate();
+        mutator.set_inner_html(overlay_host, overlay_html.unwrap_or(""));
+    }
+
+    Ok(())
+}
+
+fn find_node_by_id(document: &mut HtmlDocument, target: &str) -> Option<usize> {
+    let mut result = None;
+    let root_id = document.root_node().id;
+    document.iter_subtree_mut(root_id, |node_id, doc| {
+        if result.is_some() {
+            return;
+        }
+        if let Some(node) = doc.get_node(node_id) {
+            if let Some(id_attr) = node.attr(local_name!("id")) {
+                if id_attr == target {
+                    result = Some(node_id);
+                }
+            }
+        }
+    });
+    result
 }
 
 fn render_selection_overlay(state: &SelectionOverlayState) -> String {
