@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>React Counter Demo</title>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- Static counter structure (innerHTML not working yet) -->
+    <div id="counter-display">Count: <span id="count-value">0</span></div>
+    <button id="increment-btn">Increment</button>
+
+    <!-- Inline script simulating React counter component behavior -->
+    <script>
+        // Simple counter component using vanilla JS (using textContent instead of innerHTML for now)
+        const root = document.getElementById('root');
+        const countDisplay = document.getElementById('count-value');
+        const btn = document.getElementById('increment-btn');
+
+        let count = 0;
+
+        function render() {
+            countDisplay.textContent = String(count);
+        }
+
+        // Attach event listener
+        btn.addEventListener('click', function() {
+            count++;
+            render();
+        });
+
+        // Initial render
+        render();
+
+        // Mark that initialization completed
+        root.setAttribute('data-initialized', 'true');
+    </script>
+</body>
+</html>

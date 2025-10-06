@@ -145,6 +145,13 @@ impl JsPageRuntime {
             .context("failed to serialize runtime document")
     }
 
+    /// Evaluate JavaScript code in this runtime's persistent environment.
+    pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
+        self.environment
+            .eval(source, filename)
+            .with_context(|| format!("failed to evaluate {}", filename))
+    }
+
     /// Get a reference to the document owned by this runtime.
     /// The document is mutated directly by JS code through the bridge.
     #[allow(dead_code)]
