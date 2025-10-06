@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>React Local Counter Demo</title>
+    <base href="file:///Users/justin/code/frontier/worktrees/dom-api-milestones-claude/assets/">
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React UMD bundles from local files -->
+    <script src="react.development.js"></script>
+    <script src="react-dom.development.js"></script>
+
+    <!-- React Counter Component -->
+    <script>
+        const { createElement: h } = React;
+        const { createRoot } = ReactDOM;
+
+        function Counter() {
+            const [count, setCount] = React.useState(0);
+
+            return h('div', { className: 'counter' },
+                h('h1', null, 'React Counter: ', h('span', { id: 'count' }, count)),
+                h('button', {
+                    id: 'increment-btn',
+                    onClick: () => setCount(count + 1)
+                }, 'Increment')
+            );
+        }
+
+        // Bootstrap React
+        const root = createRoot(document.getElementById('root'));
+        root.render(h(Counter));
+
+        // Mark initialization complete
+        document.getElementById('root').setAttribute('data-react-initialized', 'true');
+    </script>
+</body>
+</html>

@@ -349,6 +349,20 @@ const DOM_BOOTSTRAP: &str = r#"
     ensureDocument();
     const frontier = ensureFrontier();
 
+    // Set up window object that React expects
+    if (typeof global.window !== 'object' || global.window === null) {
+        global.window = global;
+    }
+
+    // Add navigator object for browser detection
+    if (typeof global.navigator !== 'object' || global.navigator === null) {
+        global.navigator = {
+            userAgent: 'Frontier/1.0',
+            platform: 'Frontier',
+            language: 'en-US'
+        };
+    }
+
     function emitPatch(patch) {
         // Backward compatibility: convert 'id' field to 'handle'
         if (patch && typeof patch === 'object') {
@@ -375,9 +389,13 @@ const DOM_BOOTSTRAP: &str = r#"
     function createNodeProxy(handle) {
         const target = { [HANDLE]: handle };
         return new Proxy(target, {
-            get(_, prop) {
+            get(target, prop) {
                 if (prop === HANDLE) {
                     return handle;
+                }
+                // Check if this property was previously set by JavaScript code
+                if (prop in target && prop !== HANDLE) {
+                    return target[prop];
                 }
                 if (prop === 'textContent') {
                     const value = global.__frontier_dom_get_text(handle);
@@ -407,6 +425,18 @@ const DOM_BOOTSTRAP: &str = r#"
                     const handles = global.__frontier_dom_get_children(handle);
                     if (!handles || handles.length === 0) return null;
                     return createNodeProxy(handles[0]);
+                }
+                if (prop === 'style') {
+                    // Return a cached style object for this element
+                    // Store it on the target so it's consistent across accesses
+                    if (!target._style) {
+                        target._style = {};
+                    }
+                    return target._style;
+                }
+                if (prop === 'ownerDocument') {
+                    // Elements belong to the global document
+                    return global.document;
                 }
                 if (prop === 'getAttribute') {
                     return (name) => {
@@ -536,7 +566,7 @@ const DOM_BOOTSTRAP: &str = r#"
                 }
                 return undefined;
             },
-            set(_, prop, value) {
+            set(target, prop, value) {
                 if (prop === 'textContent') {
                     emitPatch({
                         type: 'text_content',
@@ -553,7 +583,24 @@ const DOM_BOOTSTRAP: &str = r#"
                     });
                     return true;
                 }
-                return false;
+                // Allow setting arbitrary properties on the element
+                // (React and other libraries store internal data this way)
+                target[prop] = value;
+                return true;
+            },
+            has(target, prop) {
+                // Support the 'in' operator for property checking
+                // Check target first (for properties set via JavaScript)
+                if (prop in target) {
+                    return true;
+                }
+                // Check well-known DOM properties
+                const domProps = ['textContent', 'innerHTML', 'tagName', 'nodeType', 'parentNode',
+                                   'childNodes', 'children', 'firstChild', 'style', 'ownerDocument',
+                                   'getAttribute', 'setAttribute', 'removeAttribute', 'appendChild',
+                                   'insertBefore', 'removeChild', 'replaceChild', 'addEventListener',
+                                   'removeEventListener', 'dispatchEvent'];
+                return domProps.includes(prop);
             },
         });
     }
@@ -587,6 +634,22 @@ const DOM_BOOTSTRAP: &str = r#"
             data: String(data),
         });
         return createNodeProxy(resultHandle);
+    };
+
+    // Add event listener methods to document
+    global.document.addEventListener = function addEventListener(type, listener, options) {
+        if (typeof listener !== 'function') {
+            throw new TypeError('Event listener must be a function');
+        }
+        global.__frontier_add_event_listener('document', type, listener, options);
+    };
+
+    global.document.removeEventListener = function removeEventListener(type, listener, options) {
+        global.__frontier_remove_event_listener('document', type, listener, options);
+    };
+
+    global.document.dispatchEvent = function dispatchEvent(event) {
+        return global.__frontier_dispatch_event('document', event);
     };
 
     frontier.emitDomPatch = emitPatch;

@@ -86,13 +86,13 @@ impl DomState {
 
     pub fn text_content(&self, handle: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.text_content(node_id)
     }
 
     pub fn inner_html(&self, handle: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.inner_html(node_id).ok()
     }
 
@@ -100,16 +100,16 @@ impl DomState {
         // Resolve handles before borrowing bridge
         let resolved_ids = match &patch {
             DomPatch::TextContent { handle, .. } => {
-                vec![parse_handle(handle)?]
+                vec![self.resolve_handle(handle)?]
             }
             DomPatch::InnerHtml { handle, .. } => {
-                vec![parse_handle(handle)?]
+                vec![self.resolve_handle(handle)?]
             }
             DomPatch::Attribute { handle, .. } => {
-                vec![parse_handle(handle)?]
+                vec![self.resolve_handle(handle)?]
             }
             DomPatch::RemoveAttribute { handle, .. } => {
-                vec![parse_handle(handle)?]
+                vec![self.resolve_handle(handle)?]
             }
             DomPatch::AppendChild {
                 parent_handle,
@@ -230,13 +230,13 @@ impl DomState {
 
     pub fn get_attribute(&self, handle: &str, name: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.get_attribute(node_id, name)
     }
 
     pub fn get_children(&self, handle: &str) -> Option<Vec<String>> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge
             .get_children(node_id)
             .map(|ids| ids.iter().map(|id| id.to_string()).collect())
@@ -244,19 +244,19 @@ impl DomState {
 
     pub fn get_parent(&self, handle: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.get_parent(node_id).map(|id| id.to_string())
     }
 
     pub fn get_tag_name(&self, handle: &str) -> Option<String> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.get_tag_name(node_id)
     }
 
     pub fn get_node_type(&self, handle: &str) -> Option<u8> {
         let bridge = self.bridge.as_ref()?;
-        let node_id = parse_handle(handle).ok()?;
+        let node_id = self.resolve_handle(handle).ok()?;
         bridge.get_node_type(node_id)
     }
 
@@ -278,10 +278,4 @@ impl DomState {
             .copied()
             .ok_or_else(|| anyhow!("unknown handle '{handle}'"))
     }
-}
-
-fn parse_handle(handle: &str) -> Result<usize> {
-    handle
-        .parse::<usize>()
-        .map_err(|err| anyhow!("invalid handle '{handle}': {err}"))
 }

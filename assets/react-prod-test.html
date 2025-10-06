@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>React Production Test</title>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React UMD production bundles -->
+    <script src="react.production.min.js"></script>
+    <script src="react-dom.production.min.js"></script>
+
+    <!-- Simple React component -->
+    <script>
+        var h = React.createElement;
+
+        function SimpleComponent() {
+            return h('div', null,
+                h('h1', null, 'Hello from React'),
+                h('button', { id: 'test-btn' }, 'Click Me')
+            );
+        }
+
+        ReactDOM.render(h(SimpleComponent), document.getElementById('root'));
+        document.getElementById('root').setAttribute('data-react-initialized', 'true');
+    </script>
+</body>
+</html>

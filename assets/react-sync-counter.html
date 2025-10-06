@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>React Sync Counter Demo</title>
+    <base href="file:///Users/justin/code/frontier/worktrees/dom-api-milestones-claude/assets/">
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React UMD bundles from local files -->
+    <script src="react.development.js"></script>
+    <script src="react-dom.development.js"></script>
+
+    <!-- React Counter Component using LEGACY SYNC MODE -->
+    <script>
+        // Avoid destructuring - QuickJS may not support it fully
+        var h = React.createElement;
+
+        function Counter() {
+            var state = React.useState(0);
+            var count = state[0];
+            var setCount = state[1];
+
+            return h('div', { className: 'counter' },
+                h('h1', null, 'React Counter: ', h('span', { id: 'count' }, count)),
+                h('button', {
+                    id: 'increment-btn',
+                    onClick: function() { setCount(count + 1); }
+                }, 'Increment')
+            );
+        }
+
+        // Use React 17's legacy sync rendering mode
+        // This renders synchronously and doesn't require an event loop
+        ReactDOM.render(h(Counter), document.getElementById('root'));
+
+        // Mark initialization complete
+        document.getElementById('root').setAttribute('data-react-initialized', 'true');
+    </script>
+</body>
+</html>

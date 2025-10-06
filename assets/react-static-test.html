@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>React Static Test</title>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React UMD bundles -->
+    <script src="react.development.js"></script>
+    <script src="react-dom.development.js"></script>
+
+    <!-- Simple React component without hooks -->
+    <script>
+        var h = React.createElement;
+
+        function SimpleComponent() {
+            return h('div', null,
+                h('h1', null, 'Hello from React'),
+                h('button', { id: 'test-btn' }, 'Click Me')
+            );
+        }
+
+        ReactDOM.render(h(SimpleComponent), document.getElementById('root'));
+        document.getElementById('root').setAttribute('data-react-initialized', 'true');
+    </script>
+</body>
+</html>

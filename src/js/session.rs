@@ -21,15 +21,55 @@ pub struct JsPageRuntime {
     #[allow(dead_code)]
     document: Box<HtmlDocument>,
     scripts: Vec<ScriptDescriptor>,
-    base_url: String,
     fetched_external: HashMap<usize, String>,
     executed_blocking: bool,
 }
 
 impl JsPageRuntime {
+    /// Fetch external scripts asynchronously (Send-safe).
+    /// This is separated from runtime creation to allow spawning on multi-threaded executors.
+    pub async fn fetch_external_scripts(
+        scripts: &[ScriptDescriptor],
+        base_url: &str,
+        net_provider: Arc<Provider<Resource>>,
+    ) -> Result<HashMap<usize, String>> {
+        let fetcher = ScriptFetcher::new(net_provider);
+        let fetched = fetcher.fetch_all_external(scripts, base_url).await?;
+        Ok(fetched.into_iter().collect())
+    }
+
+    /// Construct a runtime for the supplied HTML/script manifest.
+    /// For async workflows, call `fetch_external_scripts` first, then pass the result here.
+    #[allow(dead_code)] // Used in tests
+    pub fn new_with_fetched(
+        html: &str,
+        scripts: &[ScriptDescriptor],
+        config: DocumentConfig,
+        fetched_external: HashMap<usize, String>,
+    ) -> Result<Option<Self>> {
+        if scripts.is_empty() {
+            return Ok(None);
+        }
+
+        let environment = JsDomEnvironment::new(html)
+            .context("failed to create QuickJS environment for page runtime")?;
+
+        let mut document = Box::new(HtmlDocument::from_html(html, config));
+        environment.attach_document(&mut document);
+
+        Ok(Some(Self {
+            environment,
+            document,
+            scripts: scripts.to_vec(),
+            fetched_external,
+            executed_blocking: false,
+        }))
+    }
+
     /// Construct a runtime for the supplied HTML/script manifest and base URL.
-    /// Fetches all external scripts during initialization using block_on for async operations.
-    pub fn new(
+    /// Fetches all external scripts during initialization.
+    #[allow(dead_code)] // Used in tests
+    pub async fn new(
         html: &str,
         scripts: &[ScriptDescriptor],
         config: DocumentConfig,
@@ -39,36 +79,20 @@ impl JsPageRuntime {
             return Ok(None);
         }
 
-        let environment = JsDomEnvironment::new(html)
-            .context("failed to create QuickJS environment for page runtime")?;
+        // Extract base URL and fetch scripts
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "about:blank".to_string());
 
-        // Extract base URL before moving config
-        let base_url = config.base_url.clone().unwrap_or_else(|| "about:blank".to_string());
-
-        let mut document = Box::new(HtmlDocument::from_html(html, config));
-        environment.attach_document(&mut document);
-
-        // Fetch external scripts if we have a network provider
-        let fetched_external = if let Some(provider) = net_provider {
-            let fetcher = ScriptFetcher::new(provider);
-            // Use tokio::runtime::Handle to run async code in sync context
-            let handle = tokio::runtime::Handle::current();
-            let fetched = handle.block_on(async {
-                fetcher.fetch_all_external(scripts, &base_url).await
-            })?;
-            fetched.into_iter().collect()
+        let fetched_external = if let Some(provider) = net_provider.clone() {
+            Self::fetch_external_scripts(scripts, &base_url, provider).await?
         } else {
             HashMap::new()
         };
 
-        Ok(Some(Self {
-            environment,
-            document,
-            scripts: scripts.to_vec(),
-            base_url,
-            fetched_external,
-            executed_blocking: false,
-        }))
+        // Create runtime with fetched scripts
+        Self::new_with_fetched(html, scripts, config, fetched_external)
     }
 
     /// Execute all classic blocking scripts in document order.
@@ -79,10 +103,21 @@ impl JsPageRuntime {
         }
 
         // Collect all blocking classic scripts in document order
-        let blocking_scripts: Vec<_> = self.scripts.iter()
-            .filter(|s| s.kind == super::script::ScriptKind::Classic
-                     && s.execution == super::script::ScriptExecution::Blocking)
+        let blocking_scripts: Vec<_> = self
+            .scripts
+            .iter()
+            .filter(|s| {
+                s.kind == super::script::ScriptKind::Classic
+                    && s.execution == super::script::ScriptExecution::Blocking
+            })
             .collect();
+
+        tracing::info!(
+            target: "script_exec",
+            total_scripts = self.scripts.len(),
+            blocking_scripts = blocking_scripts.len(),
+            "preparing to execute blocking scripts"
+        );
 
         if blocking_scripts.is_empty() {
             self.executed_blocking = true;
@@ -93,6 +128,12 @@ impl JsPageRuntime {
 
         // Execute scripts in document order
         for script in blocking_scripts {
+            tracing::debug!(
+                target: "script_exec",
+                index = script.index,
+                is_inline = matches!(script.source, ScriptSource::Inline { .. }),
+                "processing script"
+            );
             let source_code = match &script.source {
                 ScriptSource::Inline { code } => code.clone(),
                 ScriptSource::External { src } => {
@@ -118,6 +159,12 @@ impl JsPageRuntime {
             match self.environment.eval(&source_code, &filename) {
                 Ok(()) => {
                     executed_count += 1;
+                    tracing::debug!(
+                        target: "script_exec",
+                        index = script.index,
+                        filename = %filename,
+                        "script executed successfully"
+                    );
                 }
                 Err(e) => {
                     tracing::error!(
@@ -127,6 +174,10 @@ impl JsPageRuntime {
                         error = %e,
                         "script execution failed"
                     );
+                    // Also print to stdout for debugging
+                    eprintln!("❌ Script {} execution failed:", script.index);
+                    eprintln!("   File: {}", filename);
+                    eprintln!("   Error: {}", e);
                 }
             }
         }
@@ -146,6 +197,7 @@ impl JsPageRuntime {
     }
 
     /// Evaluate JavaScript code in this runtime's persistent environment.
+    #[allow(dead_code)]
     pub fn eval(&self, source: &str, filename: &str) -> Result<()> {
         self.environment
             .eval(source, filename)

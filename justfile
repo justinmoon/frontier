@@ -1,6 +1,6 @@
 # Run the browser
 run *ARGS:
-    cargo run -- {{ARGS}}
+    cargo run --bin frontier -- {{ARGS}}
 
 # Run CI checks
 ci:

@@ -9,7 +9,8 @@ async fn react_counter_dom_access_works() {
         .expect("react counter demo asset");
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
 
-    let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+    let runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+        .await
         .expect("create runtime")
         .expect("runtime available for scripts");
 
@@ -24,10 +25,17 @@ async fn react_counter_dom_access_works() {
     );
 
     eprintln!("DOM access result: {:?}", result);
-    assert!(result.is_ok(), "should be able to access DOM: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should be able to access DOM: {:?}",
+        result.err()
+    );
 
     let rendered = runtime.document_html().expect("serialize dom");
-    assert!(rendered.contains("Test"), "should have modified root element");
+    assert!(
+        rendered.contains("Test"),
+        "should have modified root element"
+    );
 }
 
 #[tokio::test]
@@ -38,7 +46,8 @@ async fn react_counter_inner_html_works() {
         .expect("react counter demo asset");
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
 
-    let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+    let runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+        .await
         .expect("create runtime")
         .expect("runtime available for scripts");
 
@@ -63,11 +72,23 @@ async fn react_counter_inner_html_works() {
     );
 
     eprintln!("innerHTML result: {:?}", result);
-    assert!(result.is_ok(), "should be able to use innerHTML: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should be able to use innerHTML: {:?}",
+        result.err()
+    );
 
     let rendered = runtime.document_html().expect("serialize dom");
-    eprintln!("Rendered HTML snippet: {}", &rendered[rendered.find("root").unwrap_or(0)..rendered.len().min(rendered.find("root").unwrap_or(0) + 200)]);
-    assert!(rendered.contains("Test Value"), "should have rendered innerHTML: {}", rendered);
+    eprintln!(
+        "Rendered HTML snippet: {}",
+        &rendered[rendered.find("root").unwrap_or(0)
+            ..rendered.len().min(rendered.find("root").unwrap_or(0) + 200)]
+    );
+    assert!(
+        rendered.contains("Test Value"),
+        "should have rendered innerHTML: {}",
+        rendered
+    );
 }
 
 #[tokio::test]
@@ -77,24 +98,36 @@ async fn react_counter_initializes_and_renders() {
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
 
     let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+        .await
         .expect("create runtime")
         .expect("runtime available for scripts");
 
-    let summary = runtime
-        .run_blocking_scripts()
-        .expect("runtime execution");
+    let summary = runtime.run_blocking_scripts().expect("runtime execution");
 
     assert!(summary.is_some(), "should have executed scripts");
     let summary = summary.unwrap();
-    assert!(summary.executed_scripts > 0, "should execute counter script");
+    assert!(
+        summary.executed_scripts > 0,
+        "should execute counter script"
+    );
 
     let rendered = runtime.document_html().expect("serialize dom");
 
     // Verify initial render
-    assert!(rendered.contains("data-initialized=\"true\""), "counter should be initialized: {}", rendered);
+    assert!(
+        rendered.contains("data-initialized=\"true\""),
+        "counter should be initialized: {}",
+        rendered
+    );
     assert!(rendered.contains("Count:"), "should render counter text");
-    assert!(rendered.contains("id=\"count-value\""), "should have count span");
-    assert!(rendered.contains("Increment"), "should have increment button");
+    assert!(
+        rendered.contains("id=\"count-value\""),
+        "should have count span"
+    );
+    assert!(
+        rendered.contains("Increment"),
+        "should have increment button"
+    );
     assert!(rendered.contains(">0<"), "should show initial count of 0");
 }
 
@@ -105,6 +138,7 @@ async fn react_counter_handles_click_events() {
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
 
     let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+        .await
         .expect("create runtime")
         .expect("runtime available for scripts");
 
@@ -144,12 +178,11 @@ async fn react_counter_state_persists_across_evaluations() {
     let scripts = processor::collect_scripts(&html).expect("collect scripts");
 
     let mut runtime = JsPageRuntime::new(&html, &scripts, DocumentConfig::default(), None)
+        .await
         .expect("create runtime")
         .expect("runtime available for scripts");
 
-    runtime
-        .run_blocking_scripts()
-        .expect("runtime execution");
+    runtime.run_blocking_scripts().expect("runtime execution");
 
     // Click multiple times
     for _ in 0..3 {

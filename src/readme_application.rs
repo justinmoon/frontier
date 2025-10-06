@@ -26,10 +26,27 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Theme, WindowId};
 
-#[derive(Debug, Clone)]
 pub enum ReadmeEvent {
     Refresh,
     Navigation(Box<NavigationMessage>),
+}
+
+impl std::fmt::Debug for ReadmeEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refresh => write!(f, "Refresh"),
+            Self::Navigation(msg) => f.debug_tuple("Navigation").field(msg).finish(),
+        }
+    }
+}
+
+impl Clone for ReadmeEvent {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Refresh => Self::Refresh,
+            Self::Navigation(msg) => Self::Navigation(msg.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +128,17 @@ impl ReadmeApplication {
     fn set_document(&mut self, document: FetchedDocument) {
         self.current_js_runtime = None;
 
+        // Create JavaScript runtime synchronously if scripts are present
+        // This blocks the GUI briefly (~100ms for React bundles) but ensures
+        // the runtime is available for event handling and rendering
         if !document.scripts.is_empty() {
+            tracing::info!(
+                target: "quickjs",
+                url = %document.display_url,
+                script_count = document.scripts.len(),
+                "creating JavaScript runtime synchronously"
+            );
+
             let config = DocumentConfig {
                 base_url: Some(document.base_url.clone()),
                 ua_stylesheets: None,
@@ -120,22 +147,35 @@ impl ReadmeApplication {
                 ..Default::default()
             };
 
-            match JsPageRuntime::new(
+            // Block to create runtime and fetch scripts
+            // TODO: Move this to navigation phase (Phase 1 in react-followups.md)
+            match self.handle.block_on(JsPageRuntime::new(
                 &document.contents,
                 &document.scripts,
                 config,
                 Some(self.net_provider.clone()),
-            ) {
+            )) {
                 Ok(Some(runtime)) => {
+                    tracing::info!(
+                        target: "quickjs",
+                        url = %document.display_url,
+                        "runtime created successfully"
+                    );
                     self.current_js_runtime = Some(runtime);
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    tracing::debug!(
+                        target: "quickjs",
+                        url = %document.display_url,
+                        "no runtime needed (no blocking scripts)"
+                    );
+                }
                 Err(err) => {
-                    error!(
-                        target = "quickjs",
-                        url = %document.base_url,
+                    tracing::error!(
+                        target: "quickjs",
+                        url = %document.display_url,
                         error = %err,
-                        "failed to initialize page runtime"
+                        "failed to create runtime"
                     );
                 }
             }
@@ -227,9 +267,15 @@ impl ReadmeApplication {
                 }
             }
 
-            // Clone the runtime's document for rendering
-            // TODO: in the future we may want to avoid this clone and use the document directly
-            let doc_html = self.compose_html();
+            // Use the runtime's mutated document if available
+            let doc_html = if let Some(ref mutated) = updated_contents {
+                // Runtime executed and mutated the DOM - use its output
+                crate::wrap_with_url_bar(mutated, &self.current_input, None)
+            } else {
+                // Runtime exists but no mutations yet - use original
+                self.compose_html()
+            };
+
             let doc = HtmlDocument::from_html(
                 &doc_html,
                 DocumentConfig {

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Test Inline Script</title>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React UMD bundles -->
+    <script src="react.development.js"></script>
+    <script src="react-dom.development.js"></script>
+
+    <!-- Simple inline script to test execution -->
+    <script>
+        document.getElementById('root').setAttribute('data-test', 'success');
+    </script>
+</body>
+</html>

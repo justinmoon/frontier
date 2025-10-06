@@ -12,6 +12,7 @@ use super::script::{ScriptDescriptor, ScriptSource};
 
 /// Cache key for scripts: combination of origin and content hash
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[allow(dead_code)] // Used in tests
 struct ScriptCacheKey {
     origin: String,
     path: String,
@@ -19,18 +20,20 @@ struct ScriptCacheKey {
 
 /// Cached script content
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Used in tests
 struct CachedScript {
     content: String,
-    url: String,
 }
 
 /// Manages fetching and caching of external scripts
+#[allow(dead_code)] // Used in tests
 pub struct ScriptFetcher {
     net_provider: Arc<Provider<Resource>>,
     cache: Arc<RwLock<HashMap<ScriptCacheKey, CachedScript>>>,
 }
 
 impl ScriptFetcher {
+    #[allow(dead_code)] // Used in tests
     pub fn new(net_provider: Arc<Provider<Resource>>) -> Self {
         Self {
             net_provider,
@@ -39,6 +42,7 @@ impl ScriptFetcher {
     }
 
     /// Fetch a script from a URL, using cache if available
+    #[allow(dead_code)] // Used in tests
     pub async fn fetch_script(&self, script_url: &str, base_url: &str) -> Result<String> {
         // Resolve relative URLs
         let absolute_url = resolve_url(script_url, base_url)?;
@@ -47,7 +51,11 @@ impl ScriptFetcher {
 
         // Create cache key
         let cache_key = ScriptCacheKey {
-            origin: format!("{}://{}", parsed_url.scheme(), parsed_url.host_str().unwrap_or("")),
+            origin: format!(
+                "{}://{}",
+                parsed_url.scheme(),
+                parsed_url.host_str().unwrap_or("")
+            ),
             path: parsed_url.path().to_string(),
         };
 
@@ -71,7 +79,6 @@ impl ScriptFetcher {
                 cache_key,
                 CachedScript {
                     content: content.clone(),
-                    url: absolute_url,
                 },
             );
         }
@@ -80,6 +87,7 @@ impl ScriptFetcher {
     }
 
     /// Fetch all external scripts for a list of descriptors
+    #[allow(dead_code)] // Used in tests
     pub async fn fetch_all_external(
         &self,
         scripts: &[ScriptDescriptor],
@@ -109,6 +117,7 @@ impl ScriptFetcher {
         Ok(fetched)
     }
 
+    #[allow(dead_code)] // Used in tests
     async fn fetch_from_network(&self, url: &Url) -> Result<String> {
         let (tx, rx) = oneshot::channel();
         let fetch_url = url.clone();
@@ -126,9 +135,7 @@ impl ScriptFetcher {
             }),
         );
 
-        let received = rx
-            .await
-            .map_err(|_| anyhow!("network provider dropped"))?;
+        let received = rx.await.map_err(|_| anyhow!("network provider dropped"))?;
         let bytes = received.map_err(|e| anyhow!("network error: {}", e))?;
 
         let text = String::from_utf8(bytes.to_vec())
@@ -138,19 +145,25 @@ impl ScriptFetcher {
     }
 }
 
+#[allow(dead_code)] // Used in tests
 fn resolve_url(script_url: &str, base_url: &str) -> Result<String> {
     // If it's already an absolute URL, use it as-is
-    if script_url.starts_with("http://") || script_url.starts_with("https://") || script_url.starts_with("file://") {
+    if script_url.starts_with("http://")
+        || script_url.starts_with("https://")
+        || script_url.starts_with("file://")
+    {
         return Ok(script_url.to_string());
     }
 
     // Parse base URL and join with script URL
-    let base = Url::parse(base_url)
-        .with_context(|| format!("invalid base URL: {}", base_url))?;
+    let base = Url::parse(base_url).with_context(|| format!("invalid base URL: {}", base_url))?;
 
-    let resolved = base
-        .join(script_url)
-        .with_context(|| format!("failed to resolve URL: {} relative to {}", script_url, base_url))?;
+    let resolved = base.join(script_url).with_context(|| {
+        format!(
+            "failed to resolve URL: {} relative to {}",
+            script_url, base_url
+        )
+    })?;
 
     Ok(resolved.to_string())
 }
@@ -161,7 +174,10 @@ mod tests {
 
     #[test]
     fn test_resolve_url_absolute() {
-        let result = resolve_url("https://example.com/script.js", "https://base.com/page.html");
+        let result = resolve_url(
+            "https://example.com/script.js",
+            "https://base.com/page.html",
+        );
         assert_eq!(result.unwrap(), "https://example.com/script.js");
     }
 
