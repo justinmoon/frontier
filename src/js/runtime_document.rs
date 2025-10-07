@@ -54,7 +54,38 @@ impl Document for RuntimeDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
-        self.inner.poll(task_context)
+        let mut maybe_waker = None;
+        if let Some(cx) = task_context.as_ref() {
+            let waker = cx.waker().clone();
+            self.environment.register_waker(&waker);
+            maybe_waker = Some(waker);
+        }
+
+        let mut needs_redraw = self.inner.poll(task_context);
+
+        match self.environment.pump() {
+            Ok(did_work) => {
+                if did_work {
+                    needs_redraw = true;
+                }
+            }
+            Err(err) => {
+                tracing::error!(
+                    target = "quickjs",
+                    error = %err,
+                    "failed to pump timers inside poll"
+                );
+                needs_redraw = true;
+            }
+        }
+
+        if !needs_redraw && self.environment.has_pending_timers() {
+            if let Some(waker) = maybe_waker.as_ref() {
+                waker.wake_by_ref();
+            }
+        }
+
+        needs_redraw
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>React Counter Sample</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./react.production.min.js"></script>
+    <script src="./react-dom.production.min.js"></script>
+    <script>
+      (function () {
+        const { useState } = React;
+
+        function Counter() {
+          const [count, setCount] = useState(0);
+          return React.createElement(
+            "div",
+            { id: "counter-root" },
+            React.createElement(
+              "p",
+              { id: "counter-value" },
+              `Count: ${count}`
+            ),
+            React.createElement(
+              "button",
+              {
+                id: "increment",
+                onClick: function () {
+                  setCount(function (value) {
+                    return value + 1;
+                  });
+                },
+              },
+              "Increment"
+            )
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById("root"));
+        root.render(React.createElement(Counter));
+      })();
+    </script>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        margin: 40px;
+      }
+      #counter-root {
+        border: 1px solid #d0d7de;
+        border-radius: 8px;
+        padding: 16px;
+        max-width: 280px;
+      }
+      #counter-value {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+      #increment {
+        font-size: 16px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid #0969da;
+        background: #1f6feb;
+        color: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

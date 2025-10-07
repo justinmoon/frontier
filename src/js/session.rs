@@ -52,6 +52,7 @@ impl JsPageRuntime {
     }
 
     /// Serialize the current document tree managed by the runtime.
+    #[allow(dead_code)]
     pub fn document_html(&self) -> Result<String> {
         self.environment
             .document_html()

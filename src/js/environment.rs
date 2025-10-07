@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::task::Waker;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -8,6 +10,7 @@ use blitz_dom::BaseDocument;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzMouseButtonEvent, DomEvent, DomEventData, MouseEventButton,
 };
+use futures_util::task::AtomicWaker;
 use keyboard_types::{Location, Modifiers};
 use rquickjs::function::{Args as FunctionArgs, Opt};
 use rquickjs::{Ctx, Function, IntoJs, Value};
@@ -122,6 +125,14 @@ impl JsDomEnvironment {
         self.engine.eval(source, filename)
     }
 
+    #[allow(dead_code)]
+    pub fn eval_with<V>(&self, source: &str, filename: &str) -> Result<V>
+    where
+        V: for<'js> rquickjs::FromJs<'js>,
+    {
+        self.engine.eval_with(source, filename)
+    }
+
     pub fn drain_mutations(&self) -> Vec<DomPatch> {
         self.state.borrow_mut().drain_mutations()
     }
@@ -143,15 +154,27 @@ impl JsDomEnvironment {
         });
     }
 
-    pub fn pump(&self) -> Result<()> {
+    pub fn pump(&self) -> Result<bool> {
+        let mut did_work = false;
         loop {
             let timers_ran = self.timers.run_due(&self.engine)?;
             let jobs_ran = self.engine.drain_jobs()?;
+            if timers_ran || jobs_ran {
+                did_work = true;
+            }
             if !timers_ran && !jobs_ran {
                 break;
             }
         }
-        Ok(())
+        Ok(did_work)
+    }
+
+    pub fn register_waker(&self, waker: &Waker) {
+        self.timers.register_waker(waker);
+    }
+
+    pub fn has_pending_timers(&self) -> bool {
+        self.timers.has_active_timers()
     }
 }
 
@@ -743,6 +766,7 @@ struct TimerManager {
     timers: RefCell<HashMap<u32, TimerEntry>>,
     fired_rx: RefCell<UnboundedReceiver<u32>>,
     fired_tx: UnboundedSender<u32>,
+    waker: Arc<AtomicWaker>,
 }
 
 impl TimerManager {
@@ -755,6 +779,7 @@ impl TimerManager {
             timers: RefCell::new(HashMap::new()),
             fired_rx: RefCell::new(rx),
             fired_tx: tx,
+            waker: Arc::new(AtomicWaker::new()),
         }
     }
 
@@ -763,6 +788,18 @@ impl TimerManager {
         let id = *id_ref;
         *id_ref = id.wrapping_add(1).max(1);
         id
+    }
+
+    fn register_waker(&self, waker: &Waker) {
+        self.waker.register(waker);
+    }
+
+    fn wake(&self) {
+        self.waker.wake();
+    }
+
+    fn has_active_timers(&self) -> bool {
+        !self.timers.borrow().is_empty()
     }
 
     fn register_timer(&self, delay_ms: f64, kind: TimerKind, repeating: bool) -> u32 {
@@ -777,25 +814,29 @@ impl TimerManager {
             duration = Duration::from_millis(16);
         }
 
+        if repeating && duration.is_zero() {
+            duration = Duration::from_millis(1);
+        }
+
         let tx = self.fired_tx.clone();
+        let waker = Arc::clone(&self.waker);
         let join = if repeating {
             self.handle.spawn(async move {
-                let interval = if duration.is_zero() {
-                    Duration::from_millis(0)
-                } else {
-                    duration
-                };
+                let interval = duration;
                 loop {
                     sleep(interval).await;
                     if tx.send(id).is_err() {
                         break;
                     }
+                    waker.wake();
                 }
             })
         } else {
             self.handle.spawn(async move {
                 sleep(duration).await;
-                let _ = tx.send(id);
+                if tx.send(id).is_ok() {
+                    waker.wake();
+                }
             })
         };
 
@@ -806,6 +847,7 @@ impl TimerManager {
         };
 
         self.timers.borrow_mut().insert(id, entry);
+        self.wake();
         id
     }
 
@@ -815,6 +857,7 @@ impl TimerManager {
                 task.abort();
             }
         }
+        self.wake();
     }
 
     fn run_due(&self, engine: &QuickJsEngine) -> Result<bool> {
@@ -876,8 +919,30 @@ impl TimerManager {
                 let timestamp = self.start.elapsed().as_secs_f64() * 1_000.0;
                 builder.push_arg(timestamp)?;
             }
-            invoke.call_arg::<Value<'_>>(builder)?;
-            Ok(())
+
+            match invoke.call_arg::<Value<'_>>(builder) {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    if let rquickjs::Error::Exception = err {
+                        let value: Value<'_> = ctx.catch();
+                        let message = ctx
+                            .globals()
+                            .get::<_, rquickjs::Function>("String")
+                            .ok()
+                            .and_then(|string_fn| {
+                                string_fn.call::<_, rquickjs::String>((value.clone(),)).ok()
+                            })
+                            .and_then(|js_string| js_string.to_string().ok())
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        return Err(rquickjs::Error::new_from_js_message(
+                            "timer",
+                            "callback",
+                            format!("timer {id} threw: {message}"),
+                        ));
+                    }
+                    Err(err)
+                }
+            }
         })
     }
 }
@@ -987,6 +1052,15 @@ fn location_code(location: Location) -> i32 {
 const DOM_BOOTSTRAP: &str = r#"
 (() => {
     const global = globalThis;
+    if (typeof global.self !== 'object' || global.self === null) {
+        global.self = global;
+    }
+    if (typeof global.window !== 'object' || global.window === null) {
+        global.window = global;
+    }
+    if (typeof global.global !== 'object' || global.global === null) {
+        global.global = global;
+    }
     const HANDLE = Symbol('frontierHandle');
     const NODE_CACHE = new Map();
 
@@ -1778,6 +1852,10 @@ const DOM_BOOTSTRAP: &str = r#"
     }
 
     refreshDocument();
+    installEventConstructors();
+    installMessagingPolyfills();
+    installMutationObserverStub();
+    installHtmlElementConstructors();
 
     frontier.wrapHandle = wrapHandle;
     frontier.collectDescendants = collectDescendants;
@@ -1852,7 +1930,146 @@ const DOM_BOOTSTRAP: &str = r#"
         event.ctrlKey = !!event.ctrlKey;
         event.metaKey = !!event.metaKey;
         event.shiftKey = !!event.shiftKey;
+        if (typeof global.Event === 'function') {
+            Object.setPrototypeOf(event, global.Event.prototype);
+        }
+        if (
+            (type === 'message' || type === 'messageerror') &&
+            typeof global.MessageEvent === 'function'
+        ) {
+            Object.setPrototypeOf(event, global.MessageEvent.prototype);
+        }
         return event;
+    }
+
+    function installEventConstructors() {
+        if (typeof global.Event !== 'function') {
+            const EventCtor = function Event(type, init = {}) {
+                if (type == null) {
+                    throw new TypeError('Failed to construct "Event": 1 argument required');
+                }
+                const event = createEvent(type, null, init);
+                Object.setPrototypeOf(event, EventCtor.prototype);
+                return event;
+            };
+            EventCtor.prototype = {};
+            Object.defineProperty(EventCtor.prototype, 'constructor', {
+                value: EventCtor,
+                configurable: true,
+                writable: true,
+            });
+            global.Event = EventCtor;
+        }
+
+        if (typeof global.MessageEvent !== 'function') {
+            const MessageEventCtor = function MessageEvent(type, init = {}) {
+                const event = createEvent(type, null, init);
+                event.data = init && Object.prototype.hasOwnProperty.call(init, 'data') ? init.data : null;
+                event.origin = init && Object.prototype.hasOwnProperty.call(init, 'origin') ? init.origin : '';
+                event.lastEventId = init && Object.prototype.hasOwnProperty.call(init, 'lastEventId') ? init.lastEventId : '';
+                event.source = init && Object.prototype.hasOwnProperty.call(init, 'source') ? init.source : null;
+                event.ports = init && Object.prototype.hasOwnProperty.call(init, 'ports') ? init.ports : [];
+                Object.setPrototypeOf(event, MessageEventCtor.prototype);
+                return event;
+            };
+            const eventProto = typeof global.Event === 'function' ? global.Event.prototype : Object.prototype;
+            MessageEventCtor.prototype = Object.create(eventProto);
+            Object.defineProperty(MessageEventCtor.prototype, 'constructor', {
+                value: MessageEventCtor,
+                configurable: true,
+                writable: true,
+            });
+            global.MessageEvent = MessageEventCtor;
+        }
+    }
+
+    function installMessagingPolyfills() {
+        if (typeof global.MessageChannel !== 'function') {
+            function FrontierMessagePort() {
+                this.onmessage = null;
+                this._entangled = null;
+            }
+            FrontierMessagePort.prototype = {
+                constructor: FrontierMessagePort,
+                postMessage(message) {
+                    const target = this._entangled;
+                    if (!target) {
+                        return;
+                    }
+                    Promise.resolve().then(() => {
+                        if (typeof target.onmessage === 'function') {
+                            try {
+                                const event = createEvent('message', target, { data: message, source: this });
+                                target.onmessage.call(target, event);
+                            } catch (error) {
+                                throw error;
+                            }
+                        }
+                    });
+                },
+                start() {},
+                close() {
+                    if (this._entangled) {
+                        this._entangled._entangled = null;
+                        this._entangled = null;
+                    }
+                },
+            };
+
+            function FrontierMessageChannel() {
+                const port1 = new FrontierMessagePort();
+                const port2 = new FrontierMessagePort();
+                port1._entangled = port2;
+                port2._entangled = port1;
+                this.port1 = port1;
+                this.port2 = port2;
+            }
+            FrontierMessageChannel.prototype = {
+                constructor: FrontierMessageChannel,
+            };
+
+            global.MessageChannel = FrontierMessageChannel;
+            global.MessagePort = FrontierMessagePort;
+        }
+    }
+
+    function installMutationObserverStub() {
+        if (typeof global.MutationObserver !== 'function') {
+            const MutationObserverCtor = function MutationObserver(callback) {
+                if (typeof callback !== 'function') {
+                    throw new TypeError('MutationObserver constructor requires a callback function');
+                }
+                this._callback = callback;
+            };
+            MutationObserverCtor.prototype = {
+                constructor: MutationObserverCtor,
+                observe(_target, _options) {},
+                disconnect() {},
+                takeRecords() {
+                    return [];
+                },
+            };
+            global.MutationObserver = MutationObserverCtor;
+        }
+    }
+
+    function installHtmlElementConstructors() {
+        const elementBase = typeof global.HTMLElement === 'function' ? global.HTMLElement : global.Element;
+        if (typeof global.HTMLElement !== 'function' && typeof global.Element === 'function') {
+            global.HTMLElement = global.Element;
+        }
+        if (typeof global.HTMLIFrameElement !== 'function') {
+            const IFrameCtor = function HTMLIFrameElement() {};
+            if (typeof elementBase === 'function' && elementBase.prototype) {
+                IFrameCtor.prototype = Object.create(elementBase.prototype);
+                Object.defineProperty(IFrameCtor.prototype, 'constructor', {
+                    value: IFrameCtor,
+                    configurable: true,
+                    writable: true,
+                });
+            }
+            global.HTMLIFrameElement = IFrameCtor;
+        }
     }
 
     function invokeListenersOnNode(handle, node, type, event, capturePhase) {

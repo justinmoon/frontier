@@ -13,7 +13,8 @@ use anyrender_vello::VelloWindowRenderer as WindowRenderer;
 #[cfg(feature = "cpu-base")]
 use anyrender_vello_cpu::VelloCpuWindowRenderer as WindowRenderer;
 
-use blitz_dom::DocumentConfig;
+use anyhow::{anyhow, Context as AnyhowContext};
+use blitz_dom::{BaseDocument, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
@@ -21,18 +22,35 @@ use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher 
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
 use crate::blossom::BlossomFetcher;
+use crate::js::processor;
+use crate::js::runtime_document::RuntimeDocument;
+use crate::js::script::{ScriptDescriptor, ScriptSource};
+use crate::js::session::JsPageRuntime;
 use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
 use crate::net::{NostrClient, RelayDirectory};
 use crate::nns::NnsResolver;
 use crate::storage::Storage;
 use blitz_shell::{
-    create_default_event_loop, BlitzShellEvent, BlitzShellNetCallback, WindowConfig,
+    create_default_event_loop, BlitzApplication, BlitzShellEvent, BlitzShellNetCallback,
+    WindowConfig,
 };
-use std::path::PathBuf;
+use blitz_traits::events::UiEvent;
+use std::any::Any;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::task::Context as TaskContext;
+use std::thread;
+use std::time::Duration as StdDuration;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowAttributes;
+
+enum LaunchMode {
+    Standard(String),
+    ReactDemo(PathBuf),
+}
 
 struct ReadmeNavigationProvider {
     proxy: EventLoopProxy<BlitzShellEvent>,
@@ -47,9 +65,16 @@ impl NavigationProvider for ReadmeNavigationProvider {
 }
 
 fn main() {
-    let raw_input = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| String::from("https://example.com"));
+    let mut args = std::env::args().skip(1);
+    let launch_mode = match args.next().as_deref() {
+        Some("--react-demo") | Some("react-demo") => {
+            let demo_path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/react-counter/index.html");
+            LaunchMode::ReactDemo(demo_path)
+        }
+        Some(value) => LaunchMode::Standard(value.to_string()),
+        None => LaunchMode::Standard(String::from("https://example.com")),
+    };
 
     let subscriber_result = tracing_subscriber::fmt()
         .with_env_filter(
@@ -68,6 +93,24 @@ fn main() {
 
     let _guard = rt.enter();
 
+    match launch_mode {
+        LaunchMode::ReactDemo(path) => {
+            if let Err(err) = run_react_demo(&rt, &path) {
+                eprintln!("Failed to launch React demo ({}): {err:?}", path.display());
+                std::process::exit(1);
+            }
+            return;
+        }
+        LaunchMode::Standard(raw_input) => {
+            if let Err(err) = run_standard_browser(&rt, raw_input) {
+                eprintln!("Frontier exited with error: {err:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyhow::Result<()> {
     let storage = Arc::new(Storage::new().unwrap_or_else(|err| {
         eprintln!("Failed to initialise persistent storage: {err}");
         std::process::exit(1);
@@ -181,6 +224,145 @@ fn main() {
     }
 
     event_loop.run_app(&mut application).unwrap();
+    Ok(())
+}
+
+fn run_react_demo(_rt: &tokio::runtime::Runtime, demo_path: &Path) -> anyhow::Result<()> {
+    let html = std::fs::read_to_string(demo_path)
+        .with_context(|| format!("reading demo HTML from {}", demo_path.display()))?;
+    let scripts = processor::collect_scripts(&html).context("collecting scripts for React demo")?;
+
+    let mut runtime = JsPageRuntime::new(&html, &scripts)
+        .context("initialising React demo runtime")?
+        .ok_or_else(|| anyhow!("React demo produced no executable scripts"))?;
+
+    let file_url = Url::from_file_path(demo_path)
+        .map_err(|_| anyhow!("React demo path is not a valid file URL"))?;
+
+    let mut html_doc = HtmlDocument::from_html(
+        &html,
+        DocumentConfig {
+            base_url: Some(file_url.to_string()),
+            ..Default::default()
+        },
+    );
+
+    runtime.attach_document(&mut html_doc);
+    let environment = runtime.environment();
+    let base_dir = demo_path.parent().unwrap_or_else(|| Path::new("."));
+    load_external_scripts(environment.as_ref(), &scripts, base_dir)
+        .context("loading external React assets")?;
+    if let Some(summary) = runtime
+        .run_blocking_scripts()
+        .context("executing React demo scripts")?
+    {
+        tracing::info!(
+            target = "quickjs",
+            scripts = summary.executed_scripts,
+            dom_mutations = summary.dom_mutations,
+            "executed React demo scripts"
+        );
+    }
+
+    for _ in 0..10 {
+        runtime
+            .environment()
+            .pump()
+            .context("pumping React demo event loop")?;
+        thread::sleep(StdDuration::from_millis(5));
+    }
+
+    let document = ReactRuntimeDocument::new(runtime, html_doc);
+
+    let event_loop = create_default_event_loop();
+    let proxy = event_loop.create_proxy();
+    let mut app = BlitzApplication::new(proxy);
+
+    let attrs = WindowAttributes::default().with_title("React Counter Demo");
+    let renderer = WindowRenderer::new();
+    let window =
+        WindowConfig::with_attributes(Box::new(document) as Box<dyn Document>, renderer, attrs);
+    app.add_window(window);
+
+    event_loop
+        .run_app(&mut app)
+        .context("running React counter demo")
+}
+
+struct ReactRuntimeDocument {
+    #[allow(dead_code)]
+    runtime: JsPageRuntime,
+    inner: RuntimeDocument,
+}
+
+impl ReactRuntimeDocument {
+    fn new(runtime: JsPageRuntime, html_doc: HtmlDocument) -> Self {
+        let environment = runtime.environment();
+        let inner = RuntimeDocument::new(html_doc, environment);
+        Self { runtime, inner }
+    }
+}
+
+impl Deref for ReactRuntimeDocument {
+    type Target = BaseDocument;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
+}
+
+impl DerefMut for ReactRuntimeDocument {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.inner
+    }
+}
+
+impl Document for ReactRuntimeDocument {
+    fn handle_ui_event(&mut self, event: UiEvent) {
+        self.inner.handle_ui_event(event);
+    }
+
+    fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
+        self.inner.poll(task_context)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self.inner.as_any_mut()
+    }
+
+    fn id(&self) -> usize {
+        self.inner.id()
+    }
+}
+
+fn load_external_scripts(
+    environment: &crate::js::environment::JsDomEnvironment,
+    scripts: &[ScriptDescriptor],
+    base_dir: &Path,
+) -> anyhow::Result<()> {
+    for descriptor in scripts {
+        if let ScriptSource::External { src } = &descriptor.source {
+            if src.starts_with("http://") || src.starts_with("https://") {
+                continue;
+            }
+            let script_path = if Path::new(src).is_absolute() {
+                PathBuf::from(src)
+            } else {
+                base_dir.join(src)
+            };
+            let code = std::fs::read_to_string(&script_path)
+                .with_context(|| format!("reading external script {}", script_path.display()))?;
+            let filename = script_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("external-script.js");
+            environment
+                .eval(&code, filename)
+                .with_context(|| format!("executing external script {}", script_path.display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<&str>) -> String {
