@@ -40,7 +40,7 @@ notify = "8.0.0"
 nostr-sdk = { version = "0.31", default-features = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rquickjs = { path = "../../../rquickjs" }
+rquickjs = { version = "0.7", features = ["loader", "allocator", "classes", "properties", "array-buffer", "macro"] }
 kuchiki = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
