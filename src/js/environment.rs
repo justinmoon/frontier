@@ -75,36 +75,33 @@ impl JsDomEnvironment {
         let target_handle_clone = target_handle.clone();
         let path_handles_clone = path_handles.clone();
 
-        let result = self
-            .engine
-            .with_context(|ctx| {
-                let global = ctx.globals();
-                let frontier: rquickjs::Object = global.get("frontier")?;
-                let dispatch: rquickjs::Function = frontier.get("__dispatchDomEvent")?;
-                let detail_value = ctx.json_parse(detail_json.as_bytes())?;
-                let js_result: rquickjs::Value = dispatch.call((
-                    target_handle_clone.clone(),
-                    event_name_owned.clone(),
-                    detail_value,
-                    path_handles_clone.clone(),
-                ))?;
-                let js_obj = js_result.into_object().ok_or(rquickjs::Error::Unknown)?;
-                let default_prevented = js_obj
-                    .get::<_, Option<bool>>("defaultPrevented")?
-                    .unwrap_or(false);
-                let redraw_requested = js_obj
-                    .get::<_, Option<bool>>("redrawRequested")?
-                    .unwrap_or(false);
-                let propagation_stopped = js_obj
-                    .get::<_, Option<bool>>("propagationStopped")?
-                    .unwrap_or(false);
-                Ok(DispatchOutcome {
-                    default_prevented,
-                    redraw_requested,
-                    propagation_stopped,
-                })
+        let result = self.engine.with_context(|ctx| {
+            let global = ctx.globals();
+            let frontier: rquickjs::Object = global.get("frontier")?;
+            let dispatch: rquickjs::Function = frontier.get("__dispatchDomEvent")?;
+            let detail_value = ctx.json_parse(detail_json.as_bytes())?;
+            let js_result: rquickjs::Value = dispatch.call((
+                target_handle_clone.clone(),
+                event_name_owned.clone(),
+                detail_value,
+                path_handles_clone.clone(),
+            ))?;
+            let js_obj = js_result.into_object().ok_or(rquickjs::Error::Unknown)?;
+            let default_prevented = js_obj
+                .get::<_, Option<bool>>("defaultPrevented")?
+                .unwrap_or(false);
+            let redraw_requested = js_obj
+                .get::<_, Option<bool>>("redrawRequested")?
+                .unwrap_or(false);
+            let propagation_stopped = js_obj
+                .get::<_, Option<bool>>("propagationStopped")?
+                .unwrap_or(false);
+            Ok(DispatchOutcome {
+                default_prevented,
+                redraw_requested,
+                propagation_stopped,
             })
-            .map_err(anyhow::Error::from);
+        });
 
         let outcome = match result {
             Ok(outcome) => outcome,

@@ -1,12 +1,7 @@
-mod blossom;
 mod input;
 mod js;
 mod navigation;
-mod net;
-mod nns;
 mod readme_application;
-mod storage;
-mod tls;
 
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;
@@ -21,15 +16,11 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher as _};
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
-use crate::blossom::BlossomFetcher;
 use crate::js::processor;
 use crate::js::runtime_document::RuntimeDocument;
 use crate::js::script::{ScriptDescriptor, ScriptSource};
 use crate::js::session::JsPageRuntime;
-use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
-use crate::net::{NostrClient, RelayDirectory};
-use crate::nns::NnsResolver;
-use crate::storage::Storage;
+use crate::navigation::{execute_fetch, prepare_navigation};
 use blitz_shell::{
     create_default_event_loop, BlitzApplication, BlitzShellEvent, BlitzShellNetCallback,
     WindowConfig,
@@ -99,7 +90,6 @@ fn main() {
                 eprintln!("Failed to launch React demo ({}): {err:?}", path.display());
                 std::process::exit(1);
             }
-            return;
         }
         LaunchMode::Standard(raw_input) => {
             if let Err(err) = run_standard_browser(&rt, raw_input) {
@@ -111,71 +101,25 @@ fn main() {
 }
 
 fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyhow::Result<()> {
-    let storage = Arc::new(Storage::new().unwrap_or_else(|err| {
-        eprintln!("Failed to initialise persistent storage: {err}");
-        std::process::exit(1);
-    }));
-
-    let relay_config = std::env::var("FRONTIER_RELAY_CONFIG")
-        .ok()
-        .map(PathBuf::from);
-    let relay_directory = RelayDirectory::load(relay_config).unwrap_or_else(|err| {
-        eprintln!("Failed to load relay configuration: {err}. Using defaults.");
-        RelayDirectory::load(None).expect("default relays")
-    });
-    let resolver_directory = relay_directory.clone();
-    let blossom_directory = relay_directory.clone();
-    let resolver = Arc::new(NnsResolver::new(
-        Arc::clone(&storage),
-        resolver_directory,
-        NostrClient::new(),
-    ));
-    let blossom = Arc::new(
-        BlossomFetcher::new(blossom_directory).unwrap_or_else(|err| {
-            eprintln!("Failed to initialise Blossom fetcher: {err}");
-            std::process::exit(1);
-        }),
-    );
-
     let event_loop = create_default_event_loop();
     let proxy = event_loop.create_proxy();
 
     let net_callback = BlitzShellNetCallback::shared(proxy.clone());
     let net_provider = Arc::new(Provider::new(net_callback));
 
-    let initial_plan = rt
-        .block_on(prepare_navigation(&raw_input, Arc::clone(&resolver)))
+    let initial_request = rt
+        .block_on(prepare_navigation(&raw_input))
         .unwrap_or_else(|err| {
             eprintln!("Failed to prepare initial navigation target: {err}");
             std::process::exit(1);
         });
 
-    let (initial_document, initial_prompt) = match initial_plan {
-        NavigationPlan::Fetch(request) => {
-            let document = rt
-                .block_on(execute_fetch(
-                    &request,
-                    Arc::clone(&net_provider),
-                    Arc::clone(&blossom),
-                ))
-                .unwrap_or_else(|err| {
-                    eprintln!("Failed to load initial document: {err}");
-                    std::process::exit(1);
-                });
-            (document, None)
-        }
-        NavigationPlan::RequiresSelection(prompt) => {
-            let document = FetchedDocument {
-                base_url: "about:blank".into(),
-                contents: "<p>Waiting for NNS selection…</p>".into(),
-                file_path: None,
-                display_url: prompt.display_url.clone(),
-                blossom: None,
-                scripts: Vec::new(),
-            };
-            (document, Some(prompt))
-        }
-    };
+    let initial_document = rt
+        .block_on(execute_fetch(&initial_request, Arc::clone(&net_provider)))
+        .unwrap_or_else(|err| {
+            eprintln!("Failed to load initial document: {err}");
+            std::process::exit(1);
+        });
 
     let title = String::from("Frontier Browser");
 
@@ -188,11 +132,9 @@ fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyh
         raw_input.clone(),
         Arc::clone(&net_provider),
         Arc::clone(&navigation_provider),
-        Arc::clone(&resolver),
-        Arc::clone(&blossom),
     );
 
-    let html = application.prepare_initial_state(initial_document.clone(), initial_prompt.clone());
+    let html = application.prepare_initial_state(initial_document.clone());
 
     let mut doc = HtmlDocument::from_html(
         &html,
@@ -307,13 +249,13 @@ impl Deref for ReactRuntimeDocument {
     type Target = BaseDocument;
 
     fn deref(&self) -> &Self::Target {
-        &*self.inner
+        &self.inner
     }
 }
 
 impl DerefMut for ReactRuntimeDocument {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.inner
+        &mut self.inner
     }
 }
 
@@ -365,7 +307,7 @@ fn load_external_scripts(
     Ok(())
 }
 
-pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<&str>) -> String {
+pub fn wrap_with_url_bar(content: &str, display_url: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -446,95 +388,6 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
             background: #2c974b;
         }}
 
-        
-        #nns-overlay {{
-            position: fixed;
-            top: 60px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: min(560px, 92%);
-            background: #ffffff;
-            border: 1px solid #d0d7de;
-            border-radius: 12px;
-            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
-            padding: 16px 18px;
-            z-index: 1200;
-        }}
-
-        #nns-overlay header {{
-            margin-bottom: 12px;
-        }}
-
-        #nns-overlay h2 {{
-            margin: 0;
-            font-size: 18px;
-            font-weight: 600;
-        }}
-
-        #nns-overlay p {{
-            margin: 4px 0 0;
-            font-size: 13px;
-            color: #57606a;
-        }}
-
-        #nns-overlay ul {{
-            list-style: none;
-            margin: 12px 0 0;
-            padding: 0;
-            max-height: 340px;
-            overflow-y: auto;
-        }}
-
-        .overlay-option {{
-            padding: 12px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            margin-bottom: 8px;
-            cursor: pointer;
-            background: #f9fafb;
-        }}
-
-        .overlay-option:last-child {{
-            margin-bottom: 0;
-        }}
-
-        .overlay-option:hover,
-        .overlay-option.selected {{
-            background: #f0f6ff;
-            border-color: #0969da;
-        }}
-
-        .overlay-line {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-weight: 600;
-            font-size: 14px;
-        }}
-
-        .overlay-ip {{
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        }}
-
-        .overlay-pubkey {{
-            color: #57606a;
-            font-size: 12px;
-            margin-left: 12px;
-        }}
-
-        .overlay-meta {{
-            font-size: 12px;
-            color: #57606a;
-            margin-top: 6px;
-        }}
-
-        .overlay-note {{
-            display: block;
-            margin-top: 8px;
-            font-size: 13px;
-            color: #1f2328;
-        }}
-
         #go-button:active {{
             background: #298e46;
         }}
@@ -572,13 +425,9 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
     <main id="content" role="main" aria-label="Page content">
         {content}
     </main>
-    <div id="overlay-host">
-        {overlay}
-    </div>
 </body>
 </html>"#,
         display_url = display_url,
-        content = content,
-        overlay = overlay_html.unwrap_or("")
+        content = content
     )
 }

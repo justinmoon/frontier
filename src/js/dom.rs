@@ -126,9 +126,7 @@ impl DomState {
 
     pub fn handle_from_element_id(&mut self, id: &str) -> Option<String> {
         let bridge = self.bridge.as_mut()?;
-        bridge
-            .find_node_by_html_id(id)
-            .map(|node_id| format_handle(node_id))
+        bridge.find_node_by_html_id(id).map(format_handle)
     }
 
     pub fn handle_to_string(&self, handle: usize) -> String {

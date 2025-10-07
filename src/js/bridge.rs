@@ -554,7 +554,7 @@ impl BlitzJsBridge {
                     output.push(' ');
                     output.push_str(attr.name.local.as_ref());
                     output.push_str("=\"");
-                    output.push_str(&encode_double_quoted_attribute(&attr.value).into_owned());
+                    output.push_str(&encode_double_quoted_attribute(&attr.value));
                     output.push('"');
                 }
                 output.push('>');

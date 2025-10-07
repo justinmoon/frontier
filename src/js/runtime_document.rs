@@ -27,18 +27,12 @@ impl Deref for RuntimeDocument {
     type Target = BaseDocument;
 
     fn deref(&self) -> &Self::Target {
-        &*self.inner
+        &self.inner
     }
 }
 
 impl DerefMut for RuntimeDocument {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.inner
-    }
-}
-
-impl RuntimeDocument {
-    pub fn html_mut(&mut self) -> &mut HtmlDocument {
         &mut self.inner
     }
 }

@@ -6,13 +6,11 @@ use blitz_traits::events::{
     BlitzMouseButtonEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
 };
 use blitz_traits::net::DummyNetCallback;
-use frontier::blossom::BlossomFetcher;
 use frontier::js::environment::JsDomEnvironment;
 use frontier::js::processor;
 use frontier::js::script::{ScriptDescriptor, ScriptSource};
 use frontier::js::session::JsPageRuntime;
 use frontier::navigation::{self, FetchRequest, FetchSource, FetchedDocument};
-use frontier::net::RelayDirectory;
 use keyboard_types::Modifiers;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +31,7 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
             .expect("create runtime")
             .expect("runtime available for scripts");
         let mut runtime_doc = HtmlDocument::from_html(&html, DocumentConfig::default());
-        runtime.attach_document(&mut *runtime_doc);
+        runtime.attach_document(&mut runtime_doc);
         let runtime_summary = runtime
             .run_blocking_scripts()
             .expect("runtime execution")
@@ -49,7 +47,6 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
             contents: html,
             file_path: None,
             display_url: "file://demo/quickjs-demo.html".into(),
-            blossom: None,
             scripts: scripts.clone(),
         };
         let summary = processor::execute_inline_scripts(&mut document)
@@ -71,7 +68,7 @@ fn dom_bridge_updates_live_document() {
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
 
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
         environment
             .eval(
                 "document.getElementById('message').textContent = 'Updated';",
@@ -81,7 +78,7 @@ fn dom_bridge_updates_live_document() {
 
         let mut updated = None;
         {
-            let base: &mut BaseDocument = &mut *document;
+            let base: &mut BaseDocument = &mut document;
             let root_id = base.root_node().id;
             base.iter_subtree_mut(root_id, |node_id, doc| {
                 if updated.is_some() {
@@ -115,7 +112,7 @@ fn dom_event_listener_runs_and_prevents_default() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -133,7 +130,7 @@ fn dom_event_listener_runs_and_prevents_default() {
 
         let button_id = lookup_node_id(&mut document, "btn").expect("button id");
         let chain = {
-            let base: &BaseDocument = &*document;
+            let base: &BaseDocument = &document;
             base.node_chain(button_id)
         };
 
@@ -155,7 +152,7 @@ fn dom_event_listener_runs_and_prevents_default() {
 
         let status_id = lookup_node_id(&mut document, "status").expect("status id");
         let text_after = {
-            let base: &BaseDocument = &*document;
+            let base: &BaseDocument = &document;
             base.get_node(status_id)
                 .expect("status node")
                 .text_content()
@@ -175,7 +172,7 @@ fn timers_execute_after_delay() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -195,7 +192,7 @@ fn timers_execute_after_delay() {
 
         let root_id = lookup_node_id(&mut document, "root").expect("root id");
         let text = {
-            let base: &BaseDocument = &*document;
+            let base: &BaseDocument = &document;
             base.get_node(root_id).expect("root node").text_content()
         };
         assert_eq!(text, "done");
@@ -213,7 +210,7 @@ fn intervals_floor_zero_delay() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -239,7 +236,7 @@ fn intervals_floor_zero_delay() {
 
         let root_id = lookup_node_id(&mut document, "root").expect("root id");
         let text = {
-            let base: &BaseDocument = &*document;
+            let base: &BaseDocument = &document;
             base.get_node(root_id).expect("root node").text_content()
         };
         assert_eq!(text, "tick:3");
@@ -249,7 +246,7 @@ fn intervals_floor_zero_delay() {
         sleep(Duration::from_millis(5)).await;
         environment.pump().expect("final pump");
         let text_after = {
-            let base: &BaseDocument = &*document;
+            let base: &BaseDocument = &document;
             base.get_node(root_id).expect("root node").text_content()
         };
         assert_eq!(text_after, "tick:3");
@@ -280,7 +277,7 @@ fn dom_api_supports_creating_elements() {
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
 
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
         environment
             .eval(
                 r#"
@@ -297,7 +294,7 @@ fn dom_api_supports_creating_elements() {
 
         let mut found: Option<(String, Option<String>)> = None;
         {
-            let base: &mut BaseDocument = &mut *document;
+            let base: &mut BaseDocument = &mut document;
             let root_id = base.root_node().id;
             base.iter_subtree_mut(root_id, |node_id, doc| {
                 if let Some(node) = doc.get_node(node_id) {
@@ -334,13 +331,9 @@ fn react_counter_sample_executes() {
 
         let net_callback = Arc::new(DummyNetCallback);
         let net_provider = Arc::new(Provider::new(net_callback));
-        let relay_directory = RelayDirectory::load(None).expect("relay directory");
-        let blossom = Arc::new(BlossomFetcher::new(relay_directory).expect("blossom fetcher"));
-
-        let document =
-            navigation::execute_fetch(&fetch_request, Arc::clone(&net_provider), blossom)
-                .await
-                .expect("execute fetch");
+        let document = navigation::execute_fetch(&fetch_request, Arc::clone(&net_provider))
+            .await
+            .expect("execute fetch");
 
         let scripts = document.scripts.clone();
 
@@ -348,7 +341,7 @@ fn react_counter_sample_executes() {
             .expect("create runtime")
             .expect("runtime with scripts");
         let mut html_doc = HtmlDocument::from_html(&document.contents, DocumentConfig::default());
-        runtime.attach_document(&mut *html_doc);
+        runtime.attach_document(&mut html_doc);
         let env_rc = runtime.environment();
         load_external_scripts(
             env_rc.as_ref(),
@@ -365,7 +358,7 @@ fn react_counter_sample_executes() {
 
         let counter_id = lookup_node_id(&mut html_doc, "counter-value").expect("counter text id");
         let initial_text = {
-            let base: &BaseDocument = &*html_doc;
+            let base: &BaseDocument = &html_doc;
             base.get_node(counter_id)
                 .expect("counter node")
                 .text_content()
@@ -374,7 +367,7 @@ fn react_counter_sample_executes() {
 
         let button_id = lookup_node_id(&mut html_doc, "increment").expect("button id");
         let chain = {
-            let base: &BaseDocument = &*html_doc;
+            let base: &BaseDocument = &html_doc;
             base.node_chain(button_id)
         };
         let click_event = DomEvent::new(
@@ -399,7 +392,7 @@ fn react_counter_sample_executes() {
         }
 
         let updated_text = {
-            let base: &BaseDocument = &*html_doc;
+            let base: &BaseDocument = &html_doc;
             base.get_node(counter_id)
                 .expect("counter node")
                 .text_content()
