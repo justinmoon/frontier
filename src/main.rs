@@ -100,7 +100,6 @@ fn main() {
 }
 
 fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyhow::Result<()> {
-
     let event_loop = create_default_event_loop();
     let proxy = event_loop.create_proxy();
 

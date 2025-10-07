@@ -3,7 +3,9 @@ use std::sync::Arc;
 use crate::js::processor::ScriptExecutionSummary;
 use crate::js::runtime_document::RuntimeDocument;
 use crate::js::session::JsPageRuntime;
-use crate::navigation::{execute_fetch, prepare_navigation, FetchRequest, FetchedDocument, NavigationPlan};
+use crate::navigation::{
+    execute_fetch, prepare_navigation, FetchRequest, FetchedDocument, NavigationPlan,
+};
 use crate::WindowRenderer;
 use anyhow::Context;
 use blitz_dom::net::Resource;
@@ -433,7 +435,9 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
 
 #[derive(Clone, Copy, Debug)]
 struct DocumentChromeHandles {
+    #[allow(dead_code)]
     content_root: usize,
+    #[allow(dead_code)]
     url_input: usize,
 }
 

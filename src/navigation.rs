@@ -42,6 +42,7 @@ pub enum NavigationError {
     #[error("failed to parse input: {0}")]
     Parse(#[from] ParseInputError),
     #[error("unsupported input")]
+    #[allow(dead_code)]
     Unsupported,
 }
 
@@ -55,9 +56,7 @@ pub enum FetchError {
     File(#[from] std::io::Error),
 }
 
-pub async fn prepare_navigation(
-    raw_input: &str,
-) -> Result<NavigationPlan, NavigationError> {
+pub async fn prepare_navigation(raw_input: &str) -> Result<NavigationPlan, NavigationError> {
     let trimmed = raw_input.trim().to_string();
     let parsed = parse_input(raw_input)?;
 

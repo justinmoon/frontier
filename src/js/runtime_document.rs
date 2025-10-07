@@ -38,6 +38,7 @@ impl DerefMut for RuntimeDocument {
 }
 
 impl RuntimeDocument {
+    #[allow(dead_code)]
     pub fn html_mut(&mut self) -> &mut HtmlDocument {
         &mut self.inner
     }
