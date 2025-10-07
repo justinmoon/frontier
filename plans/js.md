@@ -19,6 +19,7 @@ Deliver a production-ready QuickJS-powered DOM runtime that can execute real-wor
 3. **Handle normalization** – Align JS-visible handles with Blitz’ internal mapping before listener dispatch (`src/js/dom.rs`, `src/js/environment.rs`). This resolves bugs called out in `notes/react-runtime.md` and keeps future event work predictable.
 4. **Input surface coverage** – Extend integration tests to drive keyboard/input/IME events through `RuntimeDocument` (no direct JS eval shortcuts). Look at `tests/quickjs_dom_test.rs` for patterns and add new cases.
 5. **React demo parity** – Wire `cargo run -- --react-demo` to reuse the same external-script pipeline and ensure the runtime survives repeated renders (timers cleared, listeners intact).
+6. **Source layout health** – Several JS/bridge modules are ballooning (>500 LOC). Split the larger files into focused modules (e.g. move comment payload handling, timer machinery, event dispatch) once the current work lands to keep review cycles manageable.
 
 ## Supplemental Improvements
 

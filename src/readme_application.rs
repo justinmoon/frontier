@@ -132,7 +132,11 @@ impl ReadmeApplication {
         self.current_input = document.display_url.clone();
 
         if !document.scripts.is_empty() {
-            match JsPageRuntime::new(&document.contents, &document.scripts) {
+            match JsPageRuntime::new(
+                &document.contents,
+                &document.scripts,
+                Some(document.base_url.as_str()),
+            ) {
                 Ok(Some(runtime)) => {
                     self.current_js_runtime = Some(runtime);
                 }
@@ -154,7 +158,7 @@ impl ReadmeApplication {
         let mut prepared_doc = self.build_document_with_chrome(&contents, &base_url, None);
 
         if let Some(runtime) = self.current_js_runtime.as_mut() {
-            runtime.attach_document(&mut *prepared_doc);
+            runtime.attach_document(&mut prepared_doc);
             match runtime.run_blocking_scripts() {
                 Ok(Some(summary)) => {
                     self.pending_script_summary = Some(summary);

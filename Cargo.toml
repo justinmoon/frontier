@@ -27,7 +27,7 @@ anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e026
 anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
 
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 tempfile = "3.10"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
@@ -59,6 +59,8 @@ webpki = "0.22"
 x509-parser = "0.16"
 hex = "0.4"
 keyboard-types = "0.7"
+base64 = "0.21"
+percent-encoding = "2.3"
 
 [dev-dependencies]
 accesskit = "0.17"

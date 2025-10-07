@@ -59,15 +59,39 @@ impl JsDomEnvironment {
             return Ok(DispatchOutcome::default());
         }
 
-        let (target_handle, path_handles) = {
+        let (target_handle, mut path_handles) = {
             let state = self.state.borrow();
-            let target = state.handle_to_string(event.target);
-            let path = chain
-                .iter()
-                .map(|node_id| state.handle_to_string(*node_id))
-                .collect::<Vec<_>>();
+            let target = match state.normalize_handle(event.target) {
+                Ok(Some(handle)) => handle,
+                Ok(None) => return Ok(DispatchOutcome::default()),
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        error = %err,
+                        "failed to normalise event target handle"
+                    );
+                    return Ok(DispatchOutcome::default());
+                }
+            };
+
+            let path = match state.normalize_chain(chain) {
+                Ok(handles) => handles,
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        error = %err,
+                        "failed to normalise event propagation chain"
+                    );
+                    Vec::new()
+                }
+            };
+
             (target, path)
         };
+
+        if path_handles.is_empty() {
+            path_handles.push(target_handle.clone());
+        }
 
         let detail = build_event_detail(event);
         let detail_json = to_json_string(&detail).map_err(anyhow::Error::from)?;
@@ -75,36 +99,33 @@ impl JsDomEnvironment {
         let target_handle_clone = target_handle.clone();
         let path_handles_clone = path_handles.clone();
 
-        let result = self
-            .engine
-            .with_context(|ctx| {
-                let global = ctx.globals();
-                let frontier: rquickjs::Object = global.get("frontier")?;
-                let dispatch: rquickjs::Function = frontier.get("__dispatchDomEvent")?;
-                let detail_value = ctx.json_parse(detail_json.as_bytes())?;
-                let js_result: rquickjs::Value = dispatch.call((
-                    target_handle_clone.clone(),
-                    event_name_owned.clone(),
-                    detail_value,
-                    path_handles_clone.clone(),
-                ))?;
-                let js_obj = js_result.into_object().ok_or(rquickjs::Error::Unknown)?;
-                let default_prevented = js_obj
-                    .get::<_, Option<bool>>("defaultPrevented")?
-                    .unwrap_or(false);
-                let redraw_requested = js_obj
-                    .get::<_, Option<bool>>("redrawRequested")?
-                    .unwrap_or(false);
-                let propagation_stopped = js_obj
-                    .get::<_, Option<bool>>("propagationStopped")?
-                    .unwrap_or(false);
-                Ok(DispatchOutcome {
-                    default_prevented,
-                    redraw_requested,
-                    propagation_stopped,
-                })
+        let result = self.engine.with_context(|ctx| {
+            let global = ctx.globals();
+            let frontier: rquickjs::Object = global.get("frontier")?;
+            let dispatch: rquickjs::Function = frontier.get("__dispatchDomEvent")?;
+            let detail_value = ctx.json_parse(detail_json.as_bytes())?;
+            let js_result: rquickjs::Value = dispatch.call((
+                target_handle_clone.clone(),
+                event_name_owned.clone(),
+                detail_value,
+                path_handles_clone.clone(),
+            ))?;
+            let js_obj = js_result.into_object().ok_or(rquickjs::Error::Unknown)?;
+            let default_prevented = js_obj
+                .get::<_, Option<bool>>("defaultPrevented")?
+                .unwrap_or(false);
+            let redraw_requested = js_obj
+                .get::<_, Option<bool>>("redrawRequested")?
+                .unwrap_or(false);
+            let propagation_stopped = js_obj
+                .get::<_, Option<bool>>("propagationStopped")?
+                .unwrap_or(false);
+            Ok(DispatchOutcome {
+                default_prevented,
+                redraw_requested,
+                propagation_stopped,
             })
-            .map_err(anyhow::Error::from);
+        });
 
         let outcome = match result {
             Ok(outcome) => outcome,
