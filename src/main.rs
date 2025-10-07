@@ -1,12 +1,7 @@
-mod blossom;
 mod input;
 mod js;
 mod navigation;
-mod net;
-mod nns;
 mod readme_application;
-mod storage;
-mod tls;
 
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;
@@ -21,14 +16,10 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use notify::{Error as NotifyError, Event as NotifyEvent, RecursiveMode, Watcher as _};
 use readme_application::{ReadmeApplication, ReadmeEvent};
 
-use crate::blossom::BlossomFetcher;
 use crate::js::processor;
 use crate::js::runtime_document::RuntimeDocument;
 use crate::js::session::JsPageRuntime;
-use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
-use crate::net::{NostrClient, RelayDirectory};
-use crate::nns::NnsResolver;
-use crate::storage::Storage;
+use crate::navigation::{execute_fetch, prepare_navigation, NavigationPlan};
 use blitz_shell::{
     create_default_event_loop, BlitzApplication, BlitzShellEvent, BlitzShellNetCallback,
     WindowConfig,
@@ -109,31 +100,6 @@ fn main() {
 }
 
 fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyhow::Result<()> {
-    let storage = Arc::new(Storage::new().unwrap_or_else(|err| {
-        eprintln!("Failed to initialise persistent storage: {err}");
-        std::process::exit(1);
-    }));
-
-    let relay_config = std::env::var("FRONTIER_RELAY_CONFIG")
-        .ok()
-        .map(PathBuf::from);
-    let relay_directory = RelayDirectory::load(relay_config).unwrap_or_else(|err| {
-        eprintln!("Failed to load relay configuration: {err}. Using defaults.");
-        RelayDirectory::load(None).expect("default relays")
-    });
-    let resolver_directory = relay_directory.clone();
-    let blossom_directory = relay_directory.clone();
-    let resolver = Arc::new(NnsResolver::new(
-        Arc::clone(&storage),
-        resolver_directory,
-        NostrClient::new(),
-    ));
-    let blossom = Arc::new(
-        BlossomFetcher::new(blossom_directory).unwrap_or_else(|err| {
-            eprintln!("Failed to initialise Blossom fetcher: {err}");
-            std::process::exit(1);
-        }),
-    );
 
     let event_loop = create_default_event_loop();
     let proxy = event_loop.create_proxy();
@@ -142,37 +108,19 @@ fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyh
     let net_provider = Arc::new(Provider::new(net_callback));
 
     let initial_plan = rt
-        .block_on(prepare_navigation(&raw_input, Arc::clone(&resolver)))
+        .block_on(prepare_navigation(&raw_input))
         .unwrap_or_else(|err| {
             eprintln!("Failed to prepare initial navigation target: {err}");
             std::process::exit(1);
         });
 
-    let (initial_document, initial_prompt) = match initial_plan {
-        NavigationPlan::Fetch(request) => {
-            let document = rt
-                .block_on(execute_fetch(
-                    &request,
-                    Arc::clone(&net_provider),
-                    Arc::clone(&blossom),
-                ))
-                .unwrap_or_else(|err| {
-                    eprintln!("Failed to load initial document: {err}");
-                    std::process::exit(1);
-                });
-            (document, None)
-        }
-        NavigationPlan::RequiresSelection(prompt) => {
-            let document = FetchedDocument {
-                base_url: "about:blank".into(),
-                contents: "<p>Waiting for NNS selection…</p>".into(),
-                file_path: None,
-                display_url: prompt.display_url.clone(),
-                blossom: None,
-                scripts: Vec::new(),
-            };
-            (document, Some(prompt))
-        }
+    let initial_document = match initial_plan {
+        NavigationPlan::Fetch(request) => rt
+            .block_on(execute_fetch(&request, Arc::clone(&net_provider)))
+            .unwrap_or_else(|err| {
+                eprintln!("Failed to load initial document: {err}");
+                std::process::exit(1);
+            }),
     };
 
     let title = String::from("Frontier Browser");
@@ -186,11 +134,9 @@ fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyh
         raw_input.clone(),
         Arc::clone(&net_provider),
         Arc::clone(&navigation_provider),
-        Arc::clone(&resolver),
-        Arc::clone(&blossom),
     );
 
-    let html = application.prepare_initial_state(initial_document.clone(), initial_prompt.clone());
+    let html = application.prepare_initial_state(initial_document.clone());
 
     let mut doc = HtmlDocument::from_html(
         &html,

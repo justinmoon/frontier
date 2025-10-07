@@ -1,15 +1,5 @@
 // Library exports for testing
 
-pub mod blossom;
 pub mod input;
 pub mod js;
 pub mod navigation;
-pub mod net;
-pub mod nns;
-pub mod storage;
-pub mod tls;
-
-// Re-export commonly used types for tests
-pub use net::{NostrClient, RelayDirectory};
-pub use nns::NnsResolver;
-pub use storage::Storage;

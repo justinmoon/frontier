@@ -6,13 +6,11 @@ use blitz_traits::events::{
     MouseEventButton, MouseEventButtons, UiEvent,
 };
 use blitz_traits::net::DummyNetCallback;
-use frontier::blossom::BlossomFetcher;
 use frontier::js::environment::JsDomEnvironment;
 use frontier::js::processor;
 use frontier::js::runtime_document::RuntimeDocument;
 use frontier::js::session::JsPageRuntime;
 use frontier::navigation::{self, FetchRequest, FetchSource, FetchedDocument};
-use frontier::net::RelayDirectory;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use std::ops::DerefMut;
 use std::path::Path;
@@ -50,7 +48,6 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
             contents: html,
             file_path: None,
             display_url: "file://demo/quickjs-demo.html".into(),
-            blossom: None,
             scripts: scripts.clone(),
         };
         let summary = processor::execute_inline_scripts(&mut document)
@@ -487,19 +484,16 @@ fn react_counter_sample_executes() {
         let file_url = Url::from_file_path(&asset_path).expect("file url");
 
         let fetch_request = FetchRequest {
-            source: FetchSource::LegacyUrl(file_url.clone()),
+            source: FetchSource::Url(file_url.clone()),
             display_url: file_url.to_string(),
         };
 
         let net_callback = Arc::new(DummyNetCallback);
         let net_provider = Arc::new(Provider::new(net_callback));
-        let relay_directory = RelayDirectory::load(None).expect("relay directory");
-        let blossom = Arc::new(BlossomFetcher::new(relay_directory).expect("blossom fetcher"));
 
-        let document =
-            navigation::execute_fetch(&fetch_request, Arc::clone(&net_provider), blossom)
-                .await
-                .expect("execute fetch");
+        let document = navigation::execute_fetch(&fetch_request, Arc::clone(&net_provider))
+            .await
+            .expect("execute fetch");
 
         let scripts = document.scripts.clone();
 
