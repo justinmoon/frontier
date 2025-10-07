@@ -1,5 +1,5 @@
 use blitz_dom::{local_name, BaseDocument, Document, DocumentConfig, LocalName};
-use blitz_html::HtmlDocument;
+use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_net::Provider;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzMouseButtonEvent, DomEvent, DomEventData, KeyState,
@@ -327,6 +327,13 @@ fn comment_nodes_preserve_payload() {
                 r#"
                     const marker = document.createComment('react-root');
                     document.body.appendChild(marker);
+
+                    if (marker.nodeValue !== 'react-root') {
+                        throw new Error('comment nodeValue should round-trip');
+                    }
+                    if (marker.textContent !== 'react-root') {
+                        throw new Error('comment textContent should round-trip');
+                    }
                 "#,
                 "comment-payload.js",
             )
@@ -336,6 +343,63 @@ fn comment_nodes_preserve_payload() {
         assert!(
             serialized.contains("<!--react-root-->"),
             "serialized DOM should include comment payload, got: {serialized}"
+        );
+    });
+}
+
+#[test]
+fn comment_nodes_survive_inner_html_round_trip() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = "<!DOCTYPE html><html><body><div id=\"host\"></div></body></html>";
+        let environment = JsDomEnvironment::new(html).expect("environment");
+        let mut document = HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                html_parser_provider: Some(Arc::new(HtmlProvider)),
+                ..Default::default()
+            },
+        );
+
+        environment.attach_document(&mut document);
+        environment
+            .eval(
+                r#"
+                    const host = document.getElementById('host');
+                    host.innerHTML = '<!--react-root--><span>keep</span>';
+                "#,
+                "comment-inner-html.js",
+            )
+            .expect("update host innerHTML");
+
+        let node_type: i32 = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.nodeType : -1; })()",
+                "comment-inner-html-node-type.js",
+            )
+            .expect("query comment node type");
+        assert_eq!(node_type, 8, "host.firstChild should be a comment node");
+
+        let node_value: Option<String> = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.nodeValue : null; })()",
+                "comment-inner-html-node-value.js",
+            )
+            .expect("query comment node value");
+        assert_eq!(node_value.as_deref(), Some("react-root"));
+
+        let text_content: Option<String> = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.textContent : null; })()",
+                "comment-inner-html-text-content.js",
+            )
+            .expect("query comment text content");
+        assert_eq!(text_content.as_deref(), Some("react-root"));
+
+        let serialized = environment.document_html().expect("serialize document");
+        assert!(
+            serialized.contains("<!--react-root-->"),
+            "serialized DOM should retain comment payload, got: {serialized}"
         );
     });
 }

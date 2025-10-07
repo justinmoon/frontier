@@ -90,6 +90,23 @@ impl BlitzJsBridge {
         collected
     }
 
+    fn extract_comment_payloads(value: &str) -> Vec<String> {
+        let mut payloads = Vec::new();
+        let mut remainder = value;
+
+        while let Some(start) = remainder.find("<!--") {
+            remainder = &remainder[start + 4..];
+            if let Some(end) = remainder.find("-->") {
+                payloads.push(remainder[..end].to_string());
+                remainder = &remainder[end + 3..];
+            } else {
+                break;
+            }
+        }
+
+        payloads
+    }
+
     fn gather_comment_payloads_for_clone(
         document: &BaseDocument,
         payloads: &HashMap<usize, String>,
@@ -155,6 +172,10 @@ impl BlitzJsBridge {
     }
 
     pub fn text_content(&self, node_id: usize) -> Option<String> {
+        if let Some(payload) = self.comment_payloads.get(&node_id) {
+            return Some(payload.clone());
+        }
+
         self.with_document_ref(|document, _| {
             document.get_node(node_id).map(|node| node.text_content())
         })
@@ -225,6 +246,18 @@ impl BlitzJsBridge {
                     comments.remove(&comment_id);
                 }
             }
+
+            let new_payloads = Self::extract_comment_payloads(value);
+            let new_comments = Self::collect_comment_nodes(document, node_id);
+
+            for comment_id in &new_comments {
+                comments.remove(comment_id);
+            }
+
+            for (comment_id, payload) in new_comments.into_iter().zip(new_payloads.into_iter()) {
+                comments.insert(comment_id, payload);
+            }
+
             Self::reindex_internal(document, index);
             Ok(())
         })
@@ -567,6 +600,10 @@ impl BlitzJsBridge {
     }
 
     pub fn node_value(&self, node_id: usize) -> Result<Option<String>> {
+        if let Some(payload) = self.comment_payloads.get(&node_id) {
+            return Ok(Some(payload.clone()));
+        }
+
         self.with_document_ref(|document, _| {
             let node = document
                 .get_node(node_id)
