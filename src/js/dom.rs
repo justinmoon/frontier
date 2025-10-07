@@ -126,13 +126,39 @@ impl DomState {
 
     pub fn handle_from_element_id(&mut self, id: &str) -> Option<String> {
         let bridge = self.bridge.as_mut()?;
-        bridge
-            .find_node_by_html_id(id)
-            .map(|node_id| format_handle(node_id))
+        bridge.find_node_by_html_id(id).map(format_handle)
     }
 
-    pub fn handle_to_string(&self, handle: usize) -> String {
-        format_handle(handle)
+    pub fn normalize_handle(&self, handle: usize) -> Result<Option<String>> {
+        let bridge = self.bridge_ref()?;
+        match bridge.node_type(handle) {
+            Ok(_) => Ok(Some(format_handle(handle))),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub fn normalize_chain(&self, chain: &[usize]) -> Result<Vec<String>> {
+        let bridge = self.bridge_ref()?;
+        let mut handles = Vec::with_capacity(chain.len() + 1);
+
+        for &node_id in chain {
+            if bridge.node_type(node_id).is_ok() {
+                handles.push(format_handle(node_id));
+            }
+        }
+
+        let document_handle = format_handle(bridge.document_handle());
+        if handles.is_empty()
+            || handles
+                .last()
+                .map(|h| h != &document_handle)
+                .unwrap_or(true)
+        {
+            handles.push(document_handle);
+        }
+
+        handles.dedup();
+        Ok(handles)
     }
 
     pub fn text_content(&self, handle: &str) -> Option<String> {

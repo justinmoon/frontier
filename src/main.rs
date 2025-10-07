@@ -24,7 +24,6 @@ use readme_application::{ReadmeApplication, ReadmeEvent};
 use crate::blossom::BlossomFetcher;
 use crate::js::processor;
 use crate::js::runtime_document::RuntimeDocument;
-use crate::js::script::{ScriptDescriptor, ScriptSource};
 use crate::js::session::JsPageRuntime;
 use crate::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
 use crate::net::{NostrClient, RelayDirectory};
@@ -99,7 +98,6 @@ fn main() {
                 eprintln!("Failed to launch React demo ({}): {err:?}", path.display());
                 std::process::exit(1);
             }
-            return;
         }
         LaunchMode::Standard(raw_input) => {
             if let Err(err) = run_standard_browser(&rt, raw_input) {
@@ -230,14 +228,14 @@ fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyh
 fn run_react_demo(_rt: &tokio::runtime::Runtime, demo_path: &Path) -> anyhow::Result<()> {
     let html = std::fs::read_to_string(demo_path)
         .with_context(|| format!("reading demo HTML from {}", demo_path.display()))?;
-    let scripts = processor::collect_scripts(&html).context("collecting scripts for React demo")?;
-
-    let mut runtime = JsPageRuntime::new(&html, &scripts)
-        .context("initialising React demo runtime")?
-        .ok_or_else(|| anyhow!("React demo produced no executable scripts"))?;
-
     let file_url = Url::from_file_path(demo_path)
         .map_err(|_| anyhow!("React demo path is not a valid file URL"))?;
+
+    let scripts = processor::collect_scripts(&html).context("collecting scripts for React demo")?;
+
+    let mut runtime = JsPageRuntime::new(&html, &scripts, Some(file_url.as_str()))
+        .context("initialising React demo runtime")?
+        .ok_or_else(|| anyhow!("React demo produced no executable scripts"))?;
 
     let mut html_doc = HtmlDocument::from_html(
         &html,
@@ -248,10 +246,6 @@ fn run_react_demo(_rt: &tokio::runtime::Runtime, demo_path: &Path) -> anyhow::Re
     );
 
     runtime.attach_document(&mut html_doc);
-    let environment = runtime.environment();
-    let base_dir = demo_path.parent().unwrap_or_else(|| Path::new("."));
-    load_external_scripts(environment.as_ref(), &scripts, base_dir)
-        .context("loading external React assets")?;
     if let Some(summary) = runtime
         .run_blocking_scripts()
         .context("executing React demo scripts")?
@@ -307,13 +301,13 @@ impl Deref for ReactRuntimeDocument {
     type Target = BaseDocument;
 
     fn deref(&self) -> &Self::Target {
-        &*self.inner
+        &self.inner
     }
 }
 
 impl DerefMut for ReactRuntimeDocument {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.inner
+        &mut self.inner
     }
 }
 
@@ -333,36 +327,6 @@ impl Document for ReactRuntimeDocument {
     fn id(&self) -> usize {
         self.inner.id()
     }
-}
-
-fn load_external_scripts(
-    environment: &crate::js::environment::JsDomEnvironment,
-    scripts: &[ScriptDescriptor],
-    base_dir: &Path,
-) -> anyhow::Result<()> {
-    for descriptor in scripts {
-        if let ScriptSource::External { src } = &descriptor.source {
-            if src.starts_with("http://") || src.starts_with("https://") {
-                continue;
-            }
-            let script_path = if Path::new(src).is_absolute() {
-                PathBuf::from(src)
-            } else {
-                base_dir.join(src)
-            };
-            let code = std::fs::read_to_string(&script_path)
-                .with_context(|| format!("reading external script {}", script_path.display()))?;
-            let filename = script_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("external-script.js");
-            environment
-                .eval(&code, filename)
-                .with_context(|| format!("executing external script {}", script_path.display()))?;
-        }
-    }
-
-    Ok(())
 }
 
 pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<&str>) -> String {

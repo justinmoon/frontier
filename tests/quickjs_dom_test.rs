@@ -1,20 +1,21 @@
-use anyhow::{Context as AnyhowContext, Result as AnyResult};
-use blitz_dom::{local_name, BaseDocument, DocumentConfig, LocalName};
-use blitz_html::HtmlDocument;
+use blitz_dom::{local_name, BaseDocument, Document, DocumentConfig, LocalName};
+use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_net::Provider;
 use blitz_traits::events::{
-    BlitzMouseButtonEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
+    BlitzImeEvent, BlitzKeyEvent, BlitzMouseButtonEvent, DomEvent, DomEventData, KeyState,
+    MouseEventButton, MouseEventButtons, UiEvent,
 };
 use blitz_traits::net::DummyNetCallback;
 use frontier::blossom::BlossomFetcher;
 use frontier::js::environment::JsDomEnvironment;
 use frontier::js::processor;
-use frontier::js::script::{ScriptDescriptor, ScriptSource};
+use frontier::js::runtime_document::RuntimeDocument;
 use frontier::js::session::JsPageRuntime;
 use frontier::navigation::{self, FetchRequest, FetchSource, FetchedDocument};
 use frontier::net::RelayDirectory;
-use keyboard_types::Modifiers;
-use std::path::{Path, PathBuf};
+use keyboard_types::{Code, Key, Location, Modifiers};
+use std::ops::DerefMut;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Builder;
@@ -29,11 +30,11 @@ fn quickjs_demo_executes_script_and_mutates_dom() {
         let scripts = processor::collect_scripts(&html).expect("collect scripts");
         assert_eq!(scripts.len(), 1, "demo asset contains one inline script");
 
-        let mut runtime = JsPageRuntime::new(&html, &scripts)
+        let mut runtime = JsPageRuntime::new(&html, &scripts, None)
             .expect("create runtime")
             .expect("runtime available for scripts");
         let mut runtime_doc = HtmlDocument::from_html(&html, DocumentConfig::default());
-        runtime.attach_document(&mut *runtime_doc);
+        runtime.attach_document(&mut runtime_doc);
         let runtime_summary = runtime
             .run_blocking_scripts()
             .expect("runtime execution")
@@ -71,7 +72,7 @@ fn dom_bridge_updates_live_document() {
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
 
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
         environment
             .eval(
                 "document.getElementById('message').textContent = 'Updated';",
@@ -80,20 +81,17 @@ fn dom_bridge_updates_live_document() {
             .expect("evaluate script");
 
         let mut updated = None;
-        {
-            let base: &mut BaseDocument = &mut *document;
-            let root_id = base.root_node().id;
-            base.iter_subtree_mut(root_id, |node_id, doc| {
-                if updated.is_some() {
-                    return;
+        let root_id = document.root_node().id;
+        document.iter_subtree_mut(root_id, |node_id, doc| {
+            if updated.is_some() {
+                return;
+            }
+            if let Some(node) = doc.get_node(node_id) {
+                if node.attr(local_name!("id")) == Some("message") {
+                    updated = Some(node.text_content());
                 }
-                if let Some(node) = doc.get_node(node_id) {
-                    if node.attr(local_name!("id")) == Some("message") {
-                        updated = Some(node.text_content());
-                    }
-                }
-            });
-        }
+            }
+        });
 
         assert_eq!(updated.as_deref(), Some("Updated"));
     });
@@ -115,7 +113,7 @@ fn dom_event_listener_runs_and_prevents_default() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -132,10 +130,7 @@ fn dom_event_listener_runs_and_prevents_default() {
             .expect("register listener");
 
         let button_id = lookup_node_id(&mut document, "btn").expect("button id");
-        let chain = {
-            let base: &BaseDocument = &*document;
-            base.node_chain(button_id)
-        };
+        let chain = document.node_chain(button_id);
 
         let event = DomEvent::new(
             button_id,
@@ -154,12 +149,10 @@ fn dom_event_listener_runs_and_prevents_default() {
         assert!(outcome.default_prevented);
 
         let status_id = lookup_node_id(&mut document, "status").expect("status id");
-        let text_after = {
-            let base: &BaseDocument = &*document;
-            base.get_node(status_id)
-                .expect("status node")
-                .text_content()
-        };
+        let text_after = document
+            .get_node(status_id)
+            .expect("status node")
+            .text_content();
         assert_eq!(text_after, "clicked");
     });
 }
@@ -175,7 +168,7 @@ fn timers_execute_after_delay() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -194,10 +187,10 @@ fn timers_execute_after_delay() {
         environment.pump().expect("timer pump");
 
         let root_id = lookup_node_id(&mut document, "root").expect("root id");
-        let text = {
-            let base: &BaseDocument = &*document;
-            base.get_node(root_id).expect("root node").text_content()
-        };
+        let text = document
+            .get_node(root_id)
+            .expect("root node")
+            .text_content();
         assert_eq!(text, "done");
     });
 }
@@ -213,7 +206,7 @@ fn intervals_floor_zero_delay() {
 
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
 
         environment
             .eval(
@@ -238,28 +231,32 @@ fn intervals_floor_zero_delay() {
         }
 
         let root_id = lookup_node_id(&mut document, "root").expect("root id");
-        let text = {
-            let base: &BaseDocument = &*document;
-            base.get_node(root_id).expect("root node").text_content()
-        };
+        let text = document
+            .get_node(root_id)
+            .expect("root node")
+            .text_content();
         assert_eq!(text, "tick:3");
 
         // Ensure the interval no longer fires once cleared by letting
         // the runtime spin a little longer.
         sleep(Duration::from_millis(5)).await;
         environment.pump().expect("final pump");
-        let text_after = {
-            let base: &BaseDocument = &*document;
-            base.get_node(root_id).expect("root node").text_content()
-        };
+        let text_after = document
+            .get_node(root_id)
+            .expect("root node")
+            .text_content();
         assert_eq!(text_after, "tick:3");
     });
 }
 
-fn lookup_node_id(document: &mut HtmlDocument, target: &str) -> Option<usize> {
+fn lookup_node_id<T>(document: &mut T, target: &str) -> Option<usize>
+where
+    T: DerefMut<Target = BaseDocument>,
+{
     let mut result = None;
-    let root = document.root_node().id;
-    document.iter_subtree_mut(root, |node_id, doc| {
+    let base: &mut BaseDocument = document.deref_mut();
+    let root = base.root_node().id;
+    base.iter_subtree_mut(root, |node_id, doc| {
         if result.is_some() {
             return;
         }
@@ -280,7 +277,7 @@ fn dom_api_supports_creating_elements() {
         let environment = JsDomEnvironment::new(html).expect("environment");
         let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
 
-        environment.attach_document(&mut *document);
+        environment.attach_document(&mut document);
         environment
             .eval(
                 r#"
@@ -296,26 +293,188 @@ fn dom_api_supports_creating_elements() {
             .expect("evaluate script");
 
         let mut found: Option<(String, Option<String>)> = None;
-        {
-            let base: &mut BaseDocument = &mut *document;
-            let root_id = base.root_node().id;
-            base.iter_subtree_mut(root_id, |node_id, doc| {
-                if let Some(node) = doc.get_node(node_id) {
-                    if node.attr(local_name!("id")) == Some("clicker") {
-                        let text = node.text_content();
-                        let data_attr = node
-                            .attr(LocalName::from("data-action"))
-                            .map(|value| value.to_string());
-                        found = Some((text, data_attr));
-                    }
+        let root_id = document.root_node().id;
+        document.iter_subtree_mut(root_id, |node_id, doc| {
+            if let Some(node) = doc.get_node(node_id) {
+                if node.attr(local_name!("id")) == Some("clicker") {
+                    let text = node.text_content();
+                    let data_attr = node
+                        .attr(LocalName::from("data-action"))
+                        .map(|value| value.to_string());
+                    found = Some((text, data_attr));
                 }
-            });
-        }
+            }
+        });
 
         assert_eq!(
             found,
             Some(("Click me".to_string(), Some("increment".to_string())))
         );
+    });
+}
+
+#[test]
+fn comment_nodes_preserve_payload() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = "<!DOCTYPE html><html><body></body></html>";
+        let environment = JsDomEnvironment::new(html).expect("environment");
+        let mut document = HtmlDocument::from_html(html, DocumentConfig::default());
+
+        environment.attach_document(&mut document);
+        environment
+            .eval(
+                r#"
+                    const marker = document.createComment('react-root');
+                    document.body.appendChild(marker);
+
+                    if (marker.nodeValue !== 'react-root') {
+                        throw new Error('comment nodeValue should round-trip');
+                    }
+                    if (marker.textContent !== 'react-root') {
+                        throw new Error('comment textContent should round-trip');
+                    }
+                "#,
+                "comment-payload.js",
+            )
+            .expect("create comment node");
+
+        let serialized = environment.document_html().expect("serialize document");
+        assert!(
+            serialized.contains("<!--react-root-->"),
+            "serialized DOM should include comment payload, got: {serialized}"
+        );
+    });
+}
+
+#[test]
+fn comment_nodes_survive_inner_html_round_trip() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = "<!DOCTYPE html><html><body><div id=\"host\"></div></body></html>";
+        let environment = JsDomEnvironment::new(html).expect("environment");
+        let mut document = HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                html_parser_provider: Some(Arc::new(HtmlProvider)),
+                ..Default::default()
+            },
+        );
+
+        environment.attach_document(&mut document);
+        environment
+            .eval(
+                r#"
+                    const host = document.getElementById('host');
+                    host.innerHTML = '<!--react-root--><span>keep</span>';
+                "#,
+                "comment-inner-html.js",
+            )
+            .expect("update host innerHTML");
+
+        let node_type: i32 = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.nodeType : -1; })()",
+                "comment-inner-html-node-type.js",
+            )
+            .expect("query comment node type");
+        assert_eq!(node_type, 8, "host.firstChild should be a comment node");
+
+        let node_value: Option<String> = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.nodeValue : null; })()",
+                "comment-inner-html-node-value.js",
+            )
+            .expect("query comment node value");
+        assert_eq!(node_value.as_deref(), Some("react-root"));
+
+        let text_content: Option<String> = environment
+            .eval_with(
+                "(() => { const host = document.getElementById('host'); const marker = host.firstChild; return marker ? marker.textContent : null; })()",
+                "comment-inner-html-text-content.js",
+            )
+            .expect("query comment text content");
+        assert_eq!(text_content.as_deref(), Some("react-root"));
+
+        let serialized = environment.document_html().expect("serialize document");
+        assert!(
+            serialized.contains("<!--react-root-->"),
+            "serialized DOM should retain comment payload, got: {serialized}"
+        );
+    });
+}
+
+#[test]
+fn runtime_document_handles_keyboard_and_ime_events() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = r#"
+            <!DOCTYPE html>
+            <html>
+                <body>
+                    <input id="field" value="" />
+                    <span id="key-output">?</span>
+                    <span id="ime-output" data-state="idle">?</span>
+                    <script>
+                        const field = document.getElementById('field');
+                        const keyOutput = document.getElementById('key-output');
+                        const imeOutput = document.getElementById('ime-output');
+                        field.addEventListener('keydown', (event) => {
+                            keyOutput.textContent = event.key;
+                        });
+                        field.addEventListener('composition', (event) => {
+                            imeOutput.textContent = event.value || '';
+                            imeOutput.setAttribute('data-state', event.imeState || '');
+                        });
+                    </script>
+                </body>
+            </html>
+        "#;
+
+        let scripts = processor::collect_scripts(html).expect("collect scripts");
+        let mut runtime = JsPageRuntime::new(html, &scripts, None)
+            .expect("create runtime")
+            .expect("runtime available");
+        let mut html_doc = HtmlDocument::from_html(html, DocumentConfig::default());
+        runtime.attach_document(&mut html_doc);
+        runtime.run_blocking_scripts().expect("execute scripts");
+        let environment = runtime.environment();
+        let mut runtime_doc = RuntimeDocument::new(html_doc, environment);
+
+        let field_id = lookup_node_id(&mut runtime_doc, "field").expect("field id");
+        runtime_doc.set_focus_to(field_id);
+
+        let key_event = BlitzKeyEvent {
+            key: Key::Character("a".into()),
+            code: Code::KeyA,
+            modifiers: Modifiers::default(),
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: Some("a".into()),
+        };
+
+        runtime_doc.handle_ui_event(UiEvent::KeyDown(key_event));
+        runtime.environment().pump().expect("pump after keydown");
+
+        let key_output_id = lookup_node_id(&mut runtime_doc, "key-output").expect("key output");
+        let key_text = runtime_doc
+            .get_node(key_output_id)
+            .expect("key output node")
+            .text_content();
+        assert_eq!(key_text, "a");
+
+        runtime_doc.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit("ねこ".into())));
+        runtime.environment().pump().expect("pump after ime");
+
+        let ime_output_id = lookup_node_id(&mut runtime_doc, "ime-output").expect("ime output");
+        let ime_text = runtime_doc
+            .get_node(ime_output_id)
+            .expect("ime node")
+            .text_content();
+
+        assert_eq!(ime_text, "ねこ");
     });
 }
 
@@ -344,18 +503,15 @@ fn react_counter_sample_executes() {
 
         let scripts = document.scripts.clone();
 
-        let mut runtime = JsPageRuntime::new(&document.contents, &scripts)
-            .expect("create runtime")
-            .expect("runtime with scripts");
-        let mut html_doc = HtmlDocument::from_html(&document.contents, DocumentConfig::default());
-        runtime.attach_document(&mut *html_doc);
-        let env_rc = runtime.environment();
-        load_external_scripts(
-            env_rc.as_ref(),
+        let mut runtime = JsPageRuntime::new(
+            &document.contents,
             &scripts,
-            asset_path.parent().unwrap_or_else(|| Path::new(".")),
+            Some(document.base_url.as_str()),
         )
-        .expect("load external scripts");
+        .expect("create runtime")
+        .expect("runtime with scripts");
+        let mut html_doc = HtmlDocument::from_html(&document.contents, DocumentConfig::default());
+        runtime.attach_document(&mut html_doc);
         let summary = runtime
             .run_blocking_scripts()
             .expect("run blocking scripts")
@@ -364,19 +520,14 @@ fn react_counter_sample_executes() {
         runtime.environment().pump().expect("pump after render");
 
         let counter_id = lookup_node_id(&mut html_doc, "counter-value").expect("counter text id");
-        let initial_text = {
-            let base: &BaseDocument = &*html_doc;
-            base.get_node(counter_id)
-                .expect("counter node")
-                .text_content()
-        };
+        let initial_text = html_doc
+            .get_node(counter_id)
+            .expect("counter node")
+            .text_content();
         assert_eq!(initial_text, "Count: 0");
 
         let button_id = lookup_node_id(&mut html_doc, "increment").expect("button id");
-        let chain = {
-            let base: &BaseDocument = &*html_doc;
-            base.node_chain(button_id)
-        };
+        let chain = html_doc.node_chain(button_id);
         let click_event = DomEvent::new(
             button_id,
             DomEventData::Click(BlitzMouseButtonEvent {
@@ -398,42 +549,10 @@ fn react_counter_sample_executes() {
             sleep(Duration::from_millis(5)).await;
         }
 
-        let updated_text = {
-            let base: &BaseDocument = &*html_doc;
-            base.get_node(counter_id)
-                .expect("counter node")
-                .text_content()
-        };
+        let updated_text = html_doc
+            .get_node(counter_id)
+            .expect("counter node")
+            .text_content();
         assert_eq!(updated_text, "Count: 1");
     });
-}
-
-fn load_external_scripts(
-    environment: &JsDomEnvironment,
-    scripts: &[ScriptDescriptor],
-    base_dir: &Path,
-) -> AnyResult<()> {
-    for descriptor in scripts {
-        if let ScriptSource::External { src } = &descriptor.source {
-            if src.starts_with("http://") || src.starts_with("https://") {
-                continue;
-            }
-            let path = if Path::new(src).is_absolute() {
-                PathBuf::from(src)
-            } else {
-                base_dir.join(src)
-            };
-            let code = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading external script {}", path.display()))?;
-            let filename = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("external-script.js");
-            environment
-                .eval(&code, filename)
-                .with_context(|| format!("executing external script {}", path.display()))?;
-        }
-    }
-
-    Ok(())
 }

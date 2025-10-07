@@ -38,7 +38,7 @@ pub fn execute_inline_scripts(
             ..Default::default()
         },
     );
-    environment.attach_document(&mut *temp_doc);
+    environment.attach_document(&mut temp_doc);
 
     let summary = run_inline_scripts(&environment, &inline_scripts)?;
 
