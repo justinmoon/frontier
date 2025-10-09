@@ -84,9 +84,58 @@ impl ReadmeApplication {
         self.inner.add_window(window_config);
     }
 
-    pub fn prepare_initial_state(&mut self, document: FetchedDocument) -> String {
+    pub fn prepare_initial_state(&mut self, document: FetchedDocument) {
         self.set_document(document);
-        self.compose_html()
+    }
+
+    pub fn take_initial_document(&mut self) -> Box<dyn Document> {
+        let (base_url, contents) = {
+            let current = self
+                .current_document
+                .as_ref()
+                .expect("prepare_initial_state must be called first");
+            (current.base_url.clone(), current.contents.clone())
+        };
+
+        let mut doc = self
+            .prepared_document
+            .take()
+            .unwrap_or_else(|| self.build_document_with_chrome(&contents, &base_url));
+
+        if self.chrome_handles.is_none() {
+            match DocumentChromeHandles::compute(&mut doc) {
+                Ok(handles) => self.chrome_handles = Some(handles),
+                Err(err) => {
+                    error!(
+                        target = "quickjs",
+                        url = %base_url,
+                        error = %err,
+                        "failed to compute chrome handles"
+                    );
+                }
+            }
+        }
+
+        let boxed_document: Box<dyn Document> =
+            if let Some(runtime) = self.current_js_runtime.as_ref() {
+                let environment = runtime.environment();
+                // Moving the document into RuntimeDocument changes its memory location.
+                // We need to box it first to get its final heap location, then reattach.
+                let mut boxed = Box::new(RuntimeDocument::new(doc, environment.clone()));
+                // Get mutable reference to the BaseDocument at its final location
+                use std::ops::DerefMut;
+                environment.reattach_document(boxed.deref_mut());
+                boxed as Box<dyn Document>
+            } else {
+                Box::new(doc) as Box<dyn Document>
+            };
+
+        if let Some(summary) = self.pending_script_summary.take() {
+            self.log_script_summary(&base_url, &summary);
+        }
+
+        self.pending_document_reset = false;
+        boxed_document
     }
 
     fn set_document(&mut self, document: FetchedDocument) {
@@ -169,32 +218,6 @@ impl ReadmeApplication {
             dom_mutations = summary.dom_mutations,
             "executed blocking inline scripts"
         );
-    }
-
-    fn compose_html(&self) -> String {
-        if let Some(runtime) = &self.current_js_runtime {
-            match runtime.environment().document_html() {
-                Ok(html) => return html,
-                Err(err) => {
-                    if let Some(document) = &self.current_document {
-                        error!(
-                            target = "quickjs",
-                            url = %document.base_url,
-                            error = %err,
-                            "failed to serialize prepared document"
-                        );
-                    } else {
-                        error!(target = "quickjs", error = %err, "failed to serialize prepared document");
-                    }
-                }
-            }
-        }
-
-        if let Some(document) = &self.current_document {
-            crate::wrap_with_url_bar(&document.contents, &self.current_input, None)
-        } else {
-            crate::wrap_with_url_bar("<p>Loading…</p>", &self.current_input, None)
-        }
     }
 
     fn window_mut(&mut self) -> &mut View<WindowRenderer> {

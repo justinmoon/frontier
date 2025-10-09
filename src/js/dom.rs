@@ -87,6 +87,10 @@ impl DomState {
         }
     }
 
+    pub fn reattach_document(&mut self, document: &mut BaseDocument) {
+        self.bridge = Some(BlitzJsBridge::new(document));
+    }
+
     pub fn listen(&mut self, event_type: &str) {
         let key = normalize_event_name(event_type);
         *self.event_listener_counts.entry(key).or_default() += 1;

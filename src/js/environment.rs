@@ -175,6 +175,19 @@ impl JsDomEnvironment {
         });
     }
 
+    pub fn reattach_document(&self, document: &mut BaseDocument) {
+        self.state.borrow_mut().reattach_document(document);
+        let _ = self.engine.with_context(|ctx| {
+            let global = ctx.globals();
+            if let Ok(frontier) = global.get::<_, rquickjs::Object>("frontier") {
+                if let Ok(refresh) = frontier.get::<_, rquickjs::Function>("__refreshDocument") {
+                    let _: Value = refresh.call(())?;
+                }
+            }
+            Ok(())
+        });
+    }
+
     pub fn pump(&self) -> Result<bool> {
         let mut did_work = false;
         loop {

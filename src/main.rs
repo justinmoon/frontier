@@ -135,22 +135,12 @@ fn run_standard_browser(rt: &tokio::runtime::Runtime, raw_input: String) -> anyh
         Arc::clone(&navigation_provider),
     );
 
-    let html = application.prepare_initial_state(initial_document.clone());
+    application.prepare_initial_state(initial_document.clone());
 
-    let mut doc = HtmlDocument::from_html(
-        &html,
-        DocumentConfig {
-            base_url: Some(initial_document.base_url.clone()),
-            ua_stylesheets: None,
-            ..Default::default()
-        },
-    );
-
-    doc.set_net_provider(net_provider.clone());
-    doc.set_navigation_provider(navigation_provider.clone());
+    let doc = application.take_initial_document();
     let renderer = WindowRenderer::new();
     let attrs = WindowAttributes::default().with_title(title);
-    let window = WindowConfig::with_attributes(Box::new(doc) as _, renderer, attrs);
+    let window = WindowConfig::with_attributes(doc, renderer, attrs);
 
     application.add_window(window);
 
