@@ -62,6 +62,7 @@
             xorg.libXi
             xorg.libXrandr
             vulkan-loader
+            xdotool
           ];
 
           # Disable incremental builds for Nix
