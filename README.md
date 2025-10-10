@@ -18,7 +18,8 @@ The same asset is exercised in `tests/quickjs_dom_test.rs`, so CI will fail if s
 
 Frontier ships a curated Web Platform Test (WPT) slice that exercises the QuickJS runtime end-to-end.
 
-- Run the suite locally with `just wpt`. This executes the manifest-backed tests under `tests/wpt/manifest.txt`.
+- Run the curated timer slice locally with `just wpt`. This executes the manifest-backed tests under `tests/wpt/manifest.txt`.
+- Run the broader timer suite with `just wpt-full`. This executes `tests/wpt/manifest_full.txt`, prints a coverage summary, and flags any unexpected passes.
 - Web Platform Tests are available through the `third_party/wpt` submodule. Run `git submodule update --init --recursive` after cloning.
 - Add new coverage by updating the submodule to the desired revision and appending relative paths to the manifest.
 - `cargo test` (and therefore `just ci`) executes the same slice, so regressions will block CI.

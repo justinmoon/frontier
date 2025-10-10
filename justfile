@@ -29,6 +29,11 @@ online:
 wpt:
     cargo test --test wpt_smoke -- --nocapture
 
+# Run full WPT timer suite and report coverage
+[group('test')]
+wpt-full:
+    cargo test --test wpt_full -- --ignored --nocapture
+
 # Build the browser
 build:
     cargo build
