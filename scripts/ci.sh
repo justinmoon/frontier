@@ -17,6 +17,7 @@ run_step() {
   "$@"
 }
 
+run_step "Updating submodules" git submodule update --init --recursive
 run_step "Checking formatting" cargo fmt --all -- --check
 run_step "Checking build" cargo check --workspace --all-targets
 run_step "Running clippy" cargo clippy --all-targets --workspace -- -D warnings

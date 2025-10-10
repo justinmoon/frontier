@@ -1,0 +1,5 @@
+[submodule "third_party/wpt"]
+	path = third_party/wpt
+	url = https://github.com/web-platform-tests/wpt.git
+	branch = master
+	shallow = true
