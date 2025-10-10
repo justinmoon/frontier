@@ -546,7 +546,7 @@ mod tests {
     )]
     fn react_demo_navigation_replaces_document() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-        runtime.block_on(async {
+        let (index_doc, timer_doc, display_url, net_provider) = runtime.block_on(async {
             let asset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/react-demos");
             let index_url = Url::from_file_path(asset_root.join("index.html")).unwrap();
             let timer_url = Url::from_file_path(asset_root.join("timer.html")).unwrap();
@@ -569,29 +569,27 @@ mod tests {
                 .await
                 .expect("fetch timer");
 
-            let event_loop = create_default_event_loop();
-            let proxy = event_loop.create_proxy();
-            let nav_provider = Arc::new(NoopNavigationProvider);
-
-            let mut app = ReadmeApplication::new(
-                proxy,
-                fetch_index.display_url.clone(),
-                Arc::clone(&net_provider),
-                nav_provider,
-            );
-            app.prepare_initial_state(index_doc);
-            let initial_document = app.take_initial_document();
-            let renderer = WindowRenderer::new();
-            let attrs = WindowAttributes::default().with_title("React demos test harness");
-            let window = WindowConfig::with_attributes(initial_document, renderer, attrs);
-            app.add_window(window);
-            app.render_current_document(false);
-
-            app.handle_navigation_message(NavigationMessage::Completed {
-                document: Box::new(timer_doc),
-                retain_scroll: false,
-            });
-            app.render_current_document(false);
+            (index_doc, timer_doc, fetch_index.display_url, net_provider)
         });
+
+        let event_loop = create_default_event_loop();
+        let proxy = event_loop.create_proxy();
+        let nav_provider = Arc::new(NoopNavigationProvider);
+
+        let mut app =
+            ReadmeApplication::new(proxy, display_url, Arc::clone(&net_provider), nav_provider);
+        app.prepare_initial_state(index_doc);
+        let initial_document = app.take_initial_document();
+        let renderer = WindowRenderer::new();
+        let attrs = WindowAttributes::default().with_title("React demos test harness");
+        let window = WindowConfig::with_attributes(initial_document, renderer, attrs);
+        app.add_window(window);
+        app.render_current_document(false);
+
+        app.handle_navigation_message(NavigationMessage::Completed {
+            document: Box::new(timer_doc),
+            retain_scroll: false,
+        });
+        app.render_current_document(false);
     }
 }
