@@ -1,0 +1,5 @@
+# List of curated WPT files to exercise Frontier's QuickJS runtime.
+# Paths are relative to third_party/wpt/.
+html/webappapis/timers/cleartimeout-clearinterval.any.js
+html/webappapis/timers/clearinterval-from-callback.any.js
+html/webappapis/timers/negative-settimeout.any.js

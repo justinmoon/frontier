@@ -21,6 +21,7 @@ run_step "Checking formatting" cargo fmt --all -- --check
 run_step "Checking build" cargo check --workspace --all-targets
 run_step "Running clippy" cargo clippy --all-targets --workspace -- -D warnings
 run_step "Running test suite" cargo test
+run_step "Running curated WPT slice" just wpt
 run_step "Running online tests" cargo test --test online_test -- --ignored
 
 printf '\nCI pipeline completed successfully.\n'

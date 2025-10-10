@@ -24,6 +24,11 @@ offline:
 online:
     cargo test --test online_test -- --ignored
 
+# Run curated WPT slice
+[group('test')]
+wpt:
+    cargo test --test wpt_smoke -- --nocapture
+
 # Build the browser
 build:
     cargo build
