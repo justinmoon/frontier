@@ -2,3 +2,4 @@
 /worktrees
 .direnv
 result
+node_modules

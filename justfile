@@ -1,3 +1,7 @@
+# List available recipes when running `just` with no arguments
+default:
+    @just --list
+
 # Run the browser
 run *ARGS:
     cargo run -- {{ARGS}}
@@ -5,6 +9,10 @@ run *ARGS:
 # Run CI checks
 ci:
     nix run .#ci
+
+# Launch the React micro-demos landing page inside Frontier
+react-demos:
+    cargo run --bin frontier -- "file://$(pwd)/assets/react-demos/index.html"
 
 # Run all tests (or specific test with args)
 test *ARGS:

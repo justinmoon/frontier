@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::chrome::wrap_with_url_bar;
 use crate::js::processor::ScriptExecutionSummary;
 use crate::js::runtime_document::RuntimeDocument;
 use crate::js::session::JsPageRuntime;
@@ -27,6 +28,16 @@ use winit::window::{Theme, WindowId};
 pub enum ReadmeEvent {
     Refresh,
     Navigation(Box<NavigationMessage>),
+}
+
+fn runtime_document_with_environment(
+    runtime: &JsPageRuntime,
+    doc: HtmlDocument,
+) -> RuntimeDocument {
+    let environment = runtime.environment();
+    let mut runtime_document = RuntimeDocument::new(doc, environment.clone());
+    environment.reattach_document(&mut runtime_document);
+    runtime_document
 }
 
 #[derive(Debug, Clone)]
@@ -118,16 +129,9 @@ impl ReadmeApplication {
 
         let boxed_document: Box<dyn Document> =
             if let Some(runtime) = self.current_js_runtime.as_ref() {
-                let environment = runtime.environment();
-                // Moving the document into RuntimeDocument changes its memory location.
-                // We need to box it first to get its final heap location, then reattach.
-                let mut boxed = Box::new(RuntimeDocument::new(doc, environment.clone()));
-                // Get mutable reference to the BaseDocument at its final location
-                use std::ops::DerefMut;
-                environment.reattach_document(boxed.deref_mut());
-                boxed as Box<dyn Document>
+                Box::new(runtime_document_with_environment(runtime, doc))
             } else {
-                Box::new(doc) as Box<dyn Document>
+                Box::new(doc)
             };
 
         if let Some(summary) = self.pending_script_summary.take() {
@@ -229,7 +233,7 @@ impl ReadmeApplication {
     }
 
     fn build_document_with_chrome(&self, contents: &str, base_url: &str) -> HtmlDocument {
-        let html = crate::wrap_with_url_bar(contents, &self.current_input, None);
+        let html = wrap_with_url_bar(contents, &self.current_input, None);
         HtmlDocument::from_html(
             &html,
             DocumentConfig {
@@ -275,15 +279,12 @@ impl ReadmeApplication {
                 }
             }
 
-            let boxed_document: Box<dyn Document> = if let Some(environment) = self
-                .current_js_runtime
-                .as_ref()
-                .map(|runtime| runtime.environment())
-            {
-                Box::new(RuntimeDocument::new(doc, environment)) as Box<dyn Document>
-            } else {
-                Box::new(doc) as Box<dyn Document>
-            };
+            let boxed_document: Box<dyn Document> =
+                if let Some(runtime) = self.current_js_runtime.as_ref() {
+                    Box::new(runtime_document_with_environment(runtime, doc))
+                } else {
+                    Box::new(doc)
+                };
 
             self.window_mut()
                 .replace_document(boxed_document, retain_scroll);
@@ -515,5 +516,82 @@ async fn run_fetch_task(
             }));
             let _ = proxy.send_event(BlitzShellEvent::Embedder(Arc::new(event)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::create_default_event_loop;
+    use crate::navigation::{execute_fetch, FetchRequest, FetchSource};
+    use crate::WindowConfig;
+    use crate::WindowRenderer;
+    use blitz_traits::net::DummyNetCallback;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tokio::runtime::Builder;
+    use url::Url;
+    use winit::window::WindowAttributes;
+
+    struct NoopNavigationProvider;
+
+    impl NavigationProvider for NoopNavigationProvider {
+        fn navigate_to(&self, _opts: NavigationOptions) {}
+    }
+
+    #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS requires winit event loop on main thread"
+    )]
+    fn react_demo_navigation_replaces_document() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let asset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/react-demos");
+            let index_url = Url::from_file_path(asset_root.join("index.html")).unwrap();
+            let timer_url = Url::from_file_path(asset_root.join("timer.html")).unwrap();
+
+            let net_provider = Arc::new(Provider::new(Arc::new(DummyNetCallback)));
+
+            let fetch_index = FetchRequest {
+                source: FetchSource::Url(index_url.clone()),
+                display_url: index_url.to_string(),
+            };
+            let index_doc = execute_fetch(&fetch_index, Arc::clone(&net_provider))
+                .await
+                .expect("fetch index");
+
+            let fetch_timer = FetchRequest {
+                source: FetchSource::Url(timer_url.clone()),
+                display_url: timer_url.to_string(),
+            };
+            let timer_doc = execute_fetch(&fetch_timer, Arc::clone(&net_provider))
+                .await
+                .expect("fetch timer");
+
+            let event_loop = create_default_event_loop();
+            let proxy = event_loop.create_proxy();
+            let nav_provider = Arc::new(NoopNavigationProvider);
+
+            let mut app = ReadmeApplication::new(
+                proxy,
+                fetch_index.display_url.clone(),
+                Arc::clone(&net_provider),
+                nav_provider,
+            );
+            app.prepare_initial_state(index_doc);
+            let initial_document = app.take_initial_document();
+            let renderer = WindowRenderer::new();
+            let attrs = WindowAttributes::default().with_title("React demos test harness");
+            let window = WindowConfig::with_attributes(initial_document, renderer, attrs);
+            app.add_window(window);
+            app.render_current_document(false);
+
+            app.handle_navigation_message(NavigationMessage::Completed {
+                document: Box::new(timer_doc),
+                retain_scroll: false,
+            });
+            app.render_current_document(false);
+        });
     }
 }

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frontier React Demos</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        display: flex;
+        justify-content: center;
+      }
+      main {
+        max-width: 640px;
+        width: 100%;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 28px;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 16px 0 0;
+        display: grid;
+        gap: 12px;
+      }
+      li {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        border-radius: 10px;
+      }
+      a {
+        display: flex;
+        padding: 14px 16px;
+        text-decoration: none;
+        color: inherit;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: 600;
+      }
+      a span {
+        font-weight: 400;
+        font-size: 14px;
+      }
+      a:hover {
+        background: rgba(148, 163, 184, 0.2);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Frontier React Demos</h1>
+      <p>Select a demo below. Each page is a standalone HTML bundle backed by real React builds.</p>
+      <ul>
+        <li>
+          <a href="counter.html">
+            Counter Demo
+            <span>State updates + click events</span>
+          </a>
+        </li>
+        <li>
+          <a href="timer.html">
+            Timer Demo
+            <span>Intervals + control toggles</span>
+          </a>
+        </li>
+      </ul>
+    </main>
+  </body>
+</html>
