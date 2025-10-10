@@ -2,3 +2,4 @@
 	path = third_party/wpt
 	url = https://github.com/web-platform-tests/wpt.git
 	branch = master
+	shallow = true
