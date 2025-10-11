@@ -3,3 +3,10 @@
 html/webappapis/timers/cleartimeout-clearinterval.any.js
 html/webappapis/timers/clearinterval-from-callback.any.js
 html/webappapis/timers/negative-settimeout.any.js
+dom/events/EventTarget-addEventListener.any.js
+dom/events/EventTarget-removeEventListener.any.js
+dom/events/EventTarget-constructible.any.js
+dom/events/EventTarget-add-remove-listener.any.js
+dom/events/AddEventListenerOptions-once.any.js
+dom/events/AddEventListenerOptions-passive.any.js
+dom/events/AddEventListenerOptions-signal.any.js
