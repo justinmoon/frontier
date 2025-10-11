@@ -29,6 +29,8 @@
 - Flesh out the HTTP API with `/status` and capability negotiation so third-party clients (Selenium/Playwright) can be layered on later.
 - Add coverage for the timer demo (`webdriver_timer_start_stop`) once the timer can be driven without real-time sleeps (use pump endpoint).
 - Write docs in `notes/` for running the harness and debugging failures (log locations, enabling tracing).
+- Expand abort-signal regression coverage to real DOM elements so React demos exercise listener cleanup paths (build on new EventTarget fixes before shipping more interactive flows).
+- Implement HTML timer clamping (WPT `html/webappapis/timers/type-long-settimeout.any.js`) to stabilise timer-driven demos and keep the pump loop deterministic.
 
 ## Stretch Work
 - Broaden interaction surface (keyboard input, form submission, pointer move/drag).

@@ -1109,6 +1109,7 @@ const DOM_BOOTSTRAP: &str = r#"
 
     const EVENT_TARGET_DATA = new WeakMap();
     const ABORT_SIGNAL_FLAG = Symbol('frontierAbortSignal');
+    const SIGNAL_REGISTRY = new WeakMap();
     const DOM_EXCEPTION_CODES = {
         IndexSizeError: 1,
         HierarchyRequestError: 3,
@@ -1165,7 +1166,6 @@ const DOM_BOOTSTRAP: &str = r#"
                 listeners: new Map(),
                 handle: typeof target[HANDLE] === 'string' ? String(target[HANDLE]) : null,
                 counts: new Map(),
-                blocked: new Map(),
             };
             EVENT_TARGET_DATA.set(target, record);
         } else if (record && record.handle == null && typeof target[HANDLE] === 'string') {
@@ -1338,27 +1338,15 @@ const DOM_BOOTSTRAP: &str = r#"
             entry.signal.removeEventListener('abort', entry.abortListener);
         }
         entry.abortListener = null;
-        entry.listener = {
-            call() {},
-        };
-        entry.originalCallback = null;
-    }
-
-    function blockEventType(record, type) {
-        const blocked = record.blocked;
-        const current = blocked.get(type) ?? 0;
-        blocked.set(type, current + 1);
-        queueMicrotask(() => {
-            const remaining = blocked.get(type);
-            if (remaining == null) {
-                return;
+        if (entry.signal) {
+            const entries = SIGNAL_REGISTRY.get(entry.signal);
+            if (entries) {
+                entries.delete(entry);
+                if (entries.size === 0) {
+                    SIGNAL_REGISTRY.delete(entry.signal);
+                }
             }
-            if (remaining <= 1) {
-                blocked.delete(type);
-            } else {
-                blocked.set(type, remaining - 1);
-            }
-        });
+        }
     }
 
     function addEventListenerInternal(target, type, listener, options) {
@@ -1391,19 +1379,8 @@ const DOM_BOOTSTRAP: &str = r#"
                 return;
             }
         }
-        let effectiveListener = handler;
-        if (signalProvided && signal) {
-            effectiveListener = {
-                call(target, event) {
-                    if (signal.aborted) {
-                        return;
-                    }
-                    handler.call(target, event);
-                },
-            };
-        }
         const entry = {
-            listener: effectiveListener,
+            listener: handler,
             originalCallback: listener,
             capture,
             once,
@@ -1419,10 +1396,15 @@ const DOM_BOOTSTRAP: &str = r#"
         if (signalProvided && signal) {
             const abortListener = () => {
                 removeListenerEntry(record, normalizedType, entry);
-                blockEventType(record, normalizedType);
             };
             entry.abortListener = abortListener;
             signal.addEventListener('abort', abortListener, { once: true });
+            let entries = SIGNAL_REGISTRY.get(signal);
+            if (!entries) {
+                entries = new Set();
+                SIGNAL_REGISTRY.set(signal, entries);
+            }
+            entries.add(entry);
         }
     }
 
@@ -1615,6 +1597,11 @@ const DOM_BOOTSTRAP: &str = r#"
                 continue;
             }
 
+            const removedBeforeCall = entry.once && !entry.removed;
+            if (removedBeforeCall) {
+                removeListenerEntry(record, type, entry);
+            }
+
             event.currentTarget = target;
             event.eventPhase = phase;
             event._passiveListener = !!entry.passive;
@@ -1628,7 +1615,7 @@ const DOM_BOOTSTRAP: &str = r#"
 
             event._passiveListener = false;
 
-            if (entry.once) {
+            if (entry.once && !removedBeforeCall) {
                 removeListenerEntry(record, type, entry);
             }
 
@@ -1703,14 +1690,7 @@ const DOM_BOOTSTRAP: &str = r#"
         const normalizedType = normalizeEventType(typeValue);
         const targetRecordInitial = getEventTargetRecord(target, false);
         if (targetRecordInitial) {
-            const blockedCount = targetRecordInitial.blocked.get(normalizedType) ?? 0;
-            if (blockedCount > 0) {
-                return {
-                    defaultPrevented: false,
-                    redrawRequested: false,
-                    propagationStopped: false,
-                };
-            }
+            // Removal during dispatch may prevent additional bubbling but should not abort future events.
         }
         const path = providedPath ?? buildPropagationPath(target, null);
         prepareEventForDispatch(event, target, path);
@@ -2683,12 +2663,27 @@ const DOM_BOOTSTRAP: &str = r#"
         global.CustomEvent = CustomEventCtor;
     }
 
+    function clearSignalRegistrations(signal) {
+        const entries = SIGNAL_REGISTRY.get(signal);
+        if (!entries) {
+            return;
+        }
+        SIGNAL_REGISTRY.delete(signal);
+        for (const entry of Array.from(entries)) {
+            if (!entry || entry.removed) {
+                continue;
+            }
+            removeListenerEntry(entry.ownerRecord, entry.eventType, entry);
+        }
+    }
+
     function abortSignalInternal(signal, reason) {
         if (signal._aborted) {
             return;
         }
         signal._aborted = true;
         signal._reason = reason ?? domException('AbortError', 'The operation was aborted.');
+        clearSignalRegistrations(signal);
         const abortEvent = createEvent('abort', signal, { bubbles: false, cancelable: false }, false);
         EventTargetProto.dispatchEvent.call(signal, abortEvent);
     }

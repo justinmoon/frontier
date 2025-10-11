@@ -65,6 +65,104 @@ fn bubbling_reaches_parent_without_target_listener() {
     });
 }
 
+#[test]
+fn once_listener_not_reentered_on_nested_dispatch() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = "<!DOCTYPE html><html><body></body></html>";
+        let environment = JsDomEnvironment::new(html).expect("environment");
+
+        environment
+            .eval(
+                r#"
+                    globalThis.__onceCount = 0;
+                    const target = new EventTarget();
+                    target.addEventListener('foo', () => {
+                        __onceCount++;
+                        target.dispatchEvent(new Event('foo'));
+                    }, { once: true });
+                    target.dispatchEvent(new Event('foo'));
+                "#,
+                "eventtarget-once-nested.js",
+            )
+            .expect("execute nested once listener script");
+
+        let count: i32 = environment
+            .eval_with("globalThis.__onceCount", "eventtarget-once-count.js")
+            .expect("read once invocation count");
+        assert_eq!(
+            count, 1,
+            "once listener should not be re-entered during nested dispatch"
+        );
+    });
+}
+
+#[test]
+fn abort_signal_nested_listener_removed_without_error() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let html = "<!DOCTYPE html><html><body></body></html>";
+        let environment = JsDomEnvironment::new(html).expect("environment");
+
+        environment
+            .eval(
+                r#"
+                    globalThis.__abortCount = 0;
+                    globalThis.__abortError = null;
+                    globalThis.__outerCount = 0;
+                    const et = new EventTarget();
+                    const ac = new AbortController();
+                    function safeDispatch() {
+                        try {
+                            et.dispatchEvent(new Event('foo'));
+                        } catch (error) {
+                            __abortError = String(error);
+                        }
+                    }
+                    et.addEventListener('foo', () => {
+                        __outerCount++;
+                        et.addEventListener('foo', () => {
+                            __abortCount++;
+                            if (__abortCount > 5) {
+                                ac.abort();
+                            }
+                            safeDispatch();
+                        }, { signal: ac.signal });
+                        safeDispatch();
+                    }, { once: true });
+                    safeDispatch();
+                "#,
+                "eventtarget-signal-nested.js",
+            )
+            .expect("execute nested abort listener script");
+
+        let count: i32 = environment
+            .eval_with("globalThis.__abortCount", "eventtarget-signal-count.js")
+            .expect("read abort invocation count");
+
+        let outer_count: i32 = environment
+            .eval_with("globalThis.__outerCount", "eventtarget-signal-outer.js")
+            .expect("read outer listener invocation count");
+        let error: Option<String> = environment
+            .eval_with("globalThis.__abortError", "eventtarget-signal-error.js")
+            .expect("read abort error state");
+
+        assert_eq!(
+            count, 6,
+            "abort signal should remove listener before unbounded recursion"
+        );
+        assert_eq!(
+            outer_count, 1,
+            "once-wrapped listener should run exactly once"
+        );
+
+        assert!(
+            error.as_deref().unwrap_or_default().is_empty(),
+            "abort scenario should finish without errors"
+        );
+    });
+}
+
 fn lookup_node_id<T>(document: &mut T, target: &str) -> Option<usize>
 where
     T: DerefMut<Target = BaseDocument>,
