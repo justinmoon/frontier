@@ -28,6 +28,7 @@
 - Extend `HeadlessSession` networking so WebDriver sessions can navigate to `http(s)` URLs when needed, or explicitly reject them with a clear error.
 - Flesh out the HTTP API with `/status` and capability negotiation so third-party clients (Selenium/Playwright) can be layered on later.
 - Add coverage for the timer demo (`webdriver_timer_start_stop`) once the timer can be driven without real-time sleeps (use pump endpoint).
+- Re-enable the navigation window regression test on Linux by wiring winit’s `any_thread` builder path (or otherwise satisfying the main-thread requirement) so GUI navigation stays covered on CI.
 - Write docs in `notes/` for running the harness and debugging failures (log locations, enabling tracing).
 
 ## Stretch Work
