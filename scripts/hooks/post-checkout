@@ -1,0 +1,13 @@
+#!/bin/sh
+# Automatically initialize and update submodules after checkout
+# This is especially useful for git worktrees where submodules don't get initialized by default
+
+prev_head=$1
+new_head=$2
+branch_checkout=$3
+
+# Only run for branch checkouts (not file checkouts)
+if [ "$branch_checkout" = "1" ]; then
+    echo "Initializing submodules..."
+    git submodule update --init --recursive
+fi

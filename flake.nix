@@ -133,6 +133,15 @@
 
           shellHook = ''
             export RUST_BACKTRACE=1
+
+            # Install git hooks
+            if [ -f scripts/hooks/post-checkout ]; then
+              mkdir -p .git/hooks
+              cp scripts/hooks/post-checkout .git/hooks/post-checkout
+              chmod +x .git/hooks/post-checkout
+              echo "Git hooks installed"
+            fi
+
             if command -v just >/dev/null 2>&1; then
               echo "Available just recipes:"
               just --list
