@@ -63,6 +63,7 @@ hex = "0.4"
 keyboard-types = "0.7"
 base64 = "0.21"
 percent-encoding = "2.3"
+style = { version = "0.8", package = "stylo" }
 
 [dev-dependencies]
 accesskit = "0.17"
