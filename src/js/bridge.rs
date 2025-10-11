@@ -5,6 +5,10 @@ use anyhow::{anyhow, Result};
 use blitz_dom::node::NodeData;
 use blitz_dom::{local_name, ns, BaseDocument, DocumentMutator, LocalName, QualName};
 use html_escape::{encode_double_quoted_attribute, encode_text};
+use style::data::{ElementData as StyloElementData, ElementDataFlags};
+use style::invalidation::element::restyle_hints::RestyleHint;
+use style::properties::{style_structs::Font, ComputedValues};
+use style::selector_parser::RestyleDamage;
 
 pub struct BlitzJsBridge {
     document: NonNull<BaseDocument>,
@@ -17,6 +21,8 @@ impl BlitzJsBridge {
         let pointer = NonNull::new(document as *mut BaseDocument).expect("document pointer");
         let mut id_index = HashMap::new();
         Self::reindex_internal(document, &mut id_index);
+        let root_id = document.root_node().id;
+        Self::seed_stylo_data_for_subtree(document, root_id);
         Self {
             document: pointer,
             id_index,
@@ -145,6 +151,116 @@ impl BlitzJsBridge {
         collected
     }
 
+    fn gather_clone_pairs(
+        document: &BaseDocument,
+        source_root: usize,
+        clone_root: usize,
+        deep: bool,
+    ) -> Vec<(usize, usize)> {
+        fn collect(
+            document: &BaseDocument,
+            source_id: usize,
+            clone_id: usize,
+            deep: bool,
+            out: &mut Vec<(usize, usize)>,
+        ) {
+            out.push((source_id, clone_id));
+            if !deep {
+                return;
+            }
+
+            let Some(source_node) = document.get_node(source_id) else {
+                return;
+            };
+            let Some(clone_node) = document.get_node(clone_id) else {
+                return;
+            };
+
+            for (source_child, clone_child) in
+                source_node.children.iter().zip(clone_node.children.iter())
+            {
+                collect(document, *source_child, *clone_child, true, out);
+            }
+        }
+
+        let mut pairs = Vec::new();
+        collect(document, source_root, clone_root, deep, &mut pairs);
+        pairs
+    }
+
+    fn copy_stylo_data_for_clone(
+        document: &mut BaseDocument,
+        source_root: usize,
+        clone_root: usize,
+        deep: bool,
+    ) {
+        for (source_id, clone_id) in
+            Self::gather_clone_pairs(document, source_root, clone_root, deep)
+        {
+            let snapshot = document.get_node(source_id).and_then(|node| {
+                let stylo_ref = node.stylo_element_data.borrow();
+                stylo_ref.as_ref().map(|data| {
+                    let flags = ElementDataFlags::from_bits_retain(data.flags.bits());
+                    (data.styles.clone(), data.hint, flags)
+                })
+            });
+
+            let Some(clone_node) = document.get_node(clone_id) else {
+                continue;
+            };
+
+            let mut target_stylo = clone_node.stylo_element_data.borrow_mut();
+            *target_stylo = Some(match snapshot {
+                Some((styles, hint, flags)) => StyloElementData {
+                    styles,
+                    damage: RestyleDamage::reconstruct(),
+                    hint,
+                    flags,
+                },
+                None => StyloElementData {
+                    damage: RestyleDamage::reconstruct(),
+                    ..Default::default()
+                },
+            });
+        }
+    }
+
+    fn seed_stylo_data_for_subtree(document: &mut BaseDocument, root_id: usize) {
+        let default_style =
+            ComputedValues::initial_values_with_font_override(Font::initial_values()).to_arc();
+        let mut seeded = 0usize;
+        document.iter_subtree_mut(root_id, |node_id, doc| {
+            let Some(node) = doc.get_node(node_id) else {
+                return;
+            };
+
+            if !matches!(
+                node.data,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_)
+            ) {
+                return;
+            }
+
+            let mut stylo_data = node.stylo_element_data.borrow_mut();
+            if stylo_data.is_none() {
+                *stylo_data = Some(StyloElementData {
+                    damage: RestyleDamage::reconstruct(),
+                    hint: RestyleHint::restyle_subtree(),
+                    flags: ElementDataFlags::empty(),
+                    ..Default::default()
+                });
+            }
+
+            if let Some(existing) = stylo_data.as_mut() {
+                if existing.styles.get_primary().is_none() {
+                    existing.styles.primary = Some(default_style.clone());
+                    seeded += 1;
+                }
+            }
+        });
+        tracing::trace!(root = root_id, nodes = seeded, "seeded stylo subtree");
+    }
+
     fn html_name(name: &str) -> QualName {
         Self::qualify_name(name, None)
     }
@@ -258,6 +374,7 @@ impl BlitzJsBridge {
                 comments.insert(comment_id, payload);
             }
 
+            Self::seed_stylo_data_for_subtree(document, node_id);
             Self::reindex_internal(document, index);
             Ok(())
         })
@@ -315,6 +432,8 @@ impl BlitzJsBridge {
                 mutator.create_element(qual, Vec::new())
             };
 
+            Self::seed_stylo_data_for_subtree(document, node_id);
+
             Self::refresh_node_index_internal(document, index, node_id);
             Ok(node_id)
         })
@@ -350,6 +469,7 @@ impl BlitzJsBridge {
                 mutator.append_children(parent_id, &[child_id]);
             }
 
+            Self::seed_stylo_data_for_subtree(document, child_id);
             Self::reindex_internal(document, index);
             Ok(())
         })
@@ -389,6 +509,7 @@ impl BlitzJsBridge {
                 }
             }
 
+            Self::seed_stylo_data_for_subtree(document, child_id);
             Self::reindex_internal(document, index);
             Ok(())
         })
@@ -456,6 +577,7 @@ impl BlitzJsBridge {
                 comments.remove(&comment_id);
             }
 
+            Self::seed_stylo_data_for_subtree(document, new_child_id);
             Self::reindex_internal(document, index);
             Ok(())
         })
@@ -475,6 +597,9 @@ impl BlitzJsBridge {
                 }
                 id
             };
+
+            Self::copy_stylo_data_for_clone(document, node_id, cloned_id, deep);
+            Self::seed_stylo_data_for_subtree(document, cloned_id);
 
             Self::reindex_internal(document, index);
             Ok(cloned_id)

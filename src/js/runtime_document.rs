@@ -47,7 +47,9 @@ impl RuntimeDocument {
 impl Document for RuntimeDocument {
     fn handle_ui_event(&mut self, event: UiEvent) {
         let handler = JsEventHandler::new(Rc::clone(&self.environment));
-        let mut driver = EventDriver::new(self.inner.mutate(), handler);
+        let mutator = self.inner.mutate();
+        self.environment.reattach_document(mutator.doc);
+        let mut driver = EventDriver::new(mutator, handler);
         driver.handle_ui_event(event);
         if let Err(err) = self.environment.pump() {
             tracing::error!(target = "quickjs", error = %err, "failed to pump timers after UI event");
