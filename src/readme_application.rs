@@ -541,8 +541,8 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        target_os = "macos",
-        ignore = "macOS requires winit event loop on main thread"
+        any(target_os = "macos", target_os = "linux"),
+        ignore = "Winit requires the event loop to be created on the main thread"
     )]
     fn react_demo_navigation_replaces_document() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
