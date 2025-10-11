@@ -1711,14 +1711,6 @@ const DOM_BOOTSTRAP: &str = r#"
                     propagationStopped: false,
                 };
             }
-            const activeCount = targetRecordInitial.counts.get(normalizedType) ?? 0;
-            if (activeCount === 0) {
-                return {
-                    defaultPrevented: false,
-                    redrawRequested: false,
-                    propagationStopped: false,
-                };
-            }
         }
         const path = providedPath ?? buildPropagationPath(target, null);
         prepareEventForDispatch(event, target, path);
