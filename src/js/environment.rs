@@ -1106,36 +1106,652 @@ const DOM_BOOTSTRAP: &str = r#"
     }
 
     const frontier = ensureFrontier();
-    const listenerStore = new Map();
+
+    const EVENT_TARGET_DATA = new WeakMap();
+    const ABORT_SIGNAL_FLAG = Symbol('frontierAbortSignal');
+    const SIGNAL_REGISTRY = new WeakMap();
+    const DOM_EXCEPTION_CODES = {
+        IndexSizeError: 1,
+        HierarchyRequestError: 3,
+        WrongDocumentError: 4,
+        InvalidCharacterError: 5,
+        NoModificationAllowedError: 7,
+        NotFoundError: 8,
+        NotSupportedError: 9,
+        InUseAttributeError: 10,
+        InvalidStateError: 11,
+        SyntaxError: 12,
+        InvalidModificationError: 13,
+        NamespaceError: 14,
+        InvalidAccessError: 15,
+        TypeMismatchError: 17,
+        SecurityError: 18,
+        NetworkError: 19,
+        AbortError: 20,
+        URLMismatchError: 21,
+        QuotaExceededError: 22,
+        TimeoutError: 23,
+        InvalidNodeTypeError: 24,
+        DataCloneError: 25,
+    };
+
+    let EventCtorRef = null;
+    let CustomEventCtorRef = null;
+    let MessageEventCtorRef = null;
 
     function normalizeEventType(type) {
-        return String(type).trim().toLowerCase();
+        return String(type ?? '').trim().toLowerCase();
     }
 
-    function getListenerBuckets(handle, type, create) {
-        const key = String(handle);
-        let typeMap = listenerStore.get(key);
-        if (!typeMap) {
-            if (!create) {
-                return null;
-            }
-            typeMap = new Map();
-            listenerStore.set(key, typeMap);
+    function normalizeEventTargetReceiver(target) {
+        if (target == null) {
+            return global;
         }
-        let buckets = typeMap.get(type);
+        if (typeof target === 'object' || typeof target === 'function') {
+            return target;
+        }
+        return Object(target);
+    }
+
+    function getEventTargetRecord(target, create) {
+        if (target == null || (typeof target !== 'object' && typeof target !== 'function')) {
+            if (create) {
+                throw new TypeError('EventTarget records require objects');
+            }
+            return null;
+        }
+        let record = EVENT_TARGET_DATA.get(target);
+        if (!record && create) {
+            record = {
+                listeners: new Map(),
+                handle: typeof target[HANDLE] === 'string' ? String(target[HANDLE]) : null,
+                counts: new Map(),
+            };
+            EVENT_TARGET_DATA.set(target, record);
+        } else if (record && record.handle == null && typeof target[HANDLE] === 'string') {
+            record.handle = String(target[HANDLE]);
+        }
+        return record ?? null;
+    }
+
+    function ensureEventTargetRecord(target) {
+        const record = getEventTargetRecord(target, true);
+        return record;
+    }
+
+    function associateEventTargetHandle(target, handle) {
+        if (target == null || (typeof target !== 'object' && typeof target !== 'function')) {
+            return;
+        }
+        const record = ensureEventTargetRecord(target);
+        const normalized = handle == null ? null : String(handle);
+        const previous = record.handle;
+        if (previous === normalized) {
+            return;
+        }
+        if (previous) {
+            record.counts.forEach((count, type) => {
+                if (count > 0) {
+                    global.__frontier_dom_unlisten(previous, type);
+                }
+            });
+        }
+        record.handle = normalized;
+        if (normalized) {
+            record.counts.forEach((count, type) => {
+                if (count > 0) {
+                    global.__frontier_dom_listen(normalized, type);
+                }
+            });
+        }
+    }
+
+    function getListenerBuckets(record, type, create) {
+        let buckets = record.listeners.get(type);
         if (!buckets && create) {
             buckets = { capture: [], bubble: [] };
-            typeMap.set(type, buckets);
+            record.listeners.set(type, buckets);
         }
-        return buckets;
+        return buckets ?? null;
     }
 
-    function registerListener(handle, type) {
-        global.__frontier_dom_listen(String(handle), type);
+    function incrementDomListener(record, type) {
+        const handle = record.handle;
+        const counts = record.counts;
+        const current = counts.get(type) ?? 0;
+        if (handle && current === 0) {
+            global.__frontier_dom_listen(String(handle), type);
+        }
+        counts.set(type, current + 1);
     }
 
-    function unregisterListener(handle, type) {
-        global.__frontier_dom_unlisten(String(handle), type);
+    function decrementDomListener(record, type) {
+        const handle = record.handle;
+        const counts = record.counts;
+        const current = counts.get(type);
+        if (current == null) {
+            return;
+        }
+        if (handle && current === 1) {
+            global.__frontier_dom_unlisten(String(handle), type);
+            counts.delete(type);
+        } else if (current > 1) {
+            counts.set(type, current - 1);
+        } else {
+            counts.delete(type);
+        }
+    }
+
+    function normalizeAddOptions(options) {
+        let capture = false;
+        let once = false;
+        let passive = false;
+        let signal;
+        let signalProvided = false;
+        if (options === true || options === false) {
+            capture = !!options;
+        } else if (options && typeof options === 'object') {
+            capture = !!options.capture;
+            once = !!options.once;
+            passive = !!options.passive;
+            if ('signal' in options) {
+                signal = options.signal;
+                signalProvided = true;
+            }
+        }
+        return { capture, once, passive, signal, signalProvided };
+    }
+
+    function normalizeRemoveOptions(options) {
+        let capture = false;
+        if (options === true || options === false) {
+            capture = !!options;
+        } else if (options && typeof options === 'object') {
+            capture = !!options.capture;
+        }
+        return { capture };
+    }
+
+    function normalizeCallback(callback) {
+        if (typeof callback === 'function') {
+            return {
+                original: callback,
+                call(target, event) {
+                    callback.call(target, event);
+                },
+            };
+        }
+        if (callback && typeof callback.handleEvent === 'function') {
+            return {
+                original: callback,
+                call(_target, event) {
+                    callback.handleEvent.call(callback, event);
+                },
+            };
+        }
+        return null;
+    }
+
+    function isAbortSignal(value) {
+        return value && typeof value === 'object' && value[ABORT_SIGNAL_FLAG] === true;
+    }
+
+    function removeListenerEntry(record, type, entry, bucket, indexHint) {
+        if (!entry || entry.removed) {
+            return;
+        }
+        entry.removed = true;
+        if (entry.signal && typeof entry.abortListener === 'function') {
+            entry.signal.removeEventListener('abort', entry.abortListener);
+            entry.abortListener = null;
+        }
+        const buckets = getListenerBuckets(record, type, false);
+        if (!buckets) {
+            return;
+        }
+        const targetBucket = bucket ?? (entry.capture ? buckets.capture : buckets.bubble);
+        if (!targetBucket) {
+            return;
+        }
+        if (typeof indexHint === 'number' && targetBucket[indexHint] === entry) {
+            targetBucket.splice(indexHint, 1);
+        } else {
+            let found = false;
+            for (let i = targetBucket.length - 1; i >= 0; i--) {
+                if (targetBucket[i] === entry) {
+                    targetBucket.splice(i, 1);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Rebuild bucket without the entry as a fallback.
+                for (let i = targetBucket.length - 1; i >= 0; i--) {
+                    if (targetBucket[i] && targetBucket[i].removed) {
+                        targetBucket.splice(i, 1);
+                    }
+                }
+            }
+        }
+        decrementDomListener(record, type);
+        if (entry.signal && entry.abortListener && !entry.signal.aborted) {
+            entry.signal.removeEventListener('abort', entry.abortListener);
+        }
+        entry.abortListener = null;
+        if (entry.signal) {
+            const entries = SIGNAL_REGISTRY.get(entry.signal);
+            if (entries) {
+                entries.delete(entry);
+                if (entries.size === 0) {
+                    SIGNAL_REGISTRY.delete(entry.signal);
+                }
+            }
+        }
+    }
+
+    function addEventListenerInternal(target, type, listener, options) {
+        target = normalizeEventTargetReceiver(target);
+        const normalizedType = normalizeEventType(type);
+        if (!normalizedType) {
+            return;
+        }
+        const { capture, once, passive, signal, signalProvided } = normalizeAddOptions(options);
+        const handler = normalizeCallback(listener);
+        if (!handler && !signalProvided) {
+            return;
+        }
+        if (signalProvided) {
+            if (!isAbortSignal(signal)) {
+                throw new TypeError('The "signal" option must be an instance of AbortSignal');
+            }
+            if (signal.aborted) {
+                return;
+            }
+        }
+        if (!handler) {
+            return;
+        }
+        const record = ensureEventTargetRecord(target);
+        const buckets = getListenerBuckets(record, normalizedType, true);
+        const bucket = capture ? buckets.capture : buckets.bubble;
+        for (const existing of bucket) {
+            if (existing.originalCallback === listener && existing.capture === capture) {
+                return;
+            }
+        }
+        const entry = {
+            listener: handler,
+            originalCallback: listener,
+            capture,
+            once,
+            passive: !!passive,
+            signal: signalProvided ? signal : null,
+            removed: false,
+            ownerRecord: record,
+            eventType: normalizedType,
+            abortListener: null,
+        };
+        bucket.push(entry);
+        incrementDomListener(record, normalizedType);
+        if (signalProvided && signal) {
+            const abortListener = () => {
+                removeListenerEntry(record, normalizedType, entry);
+            };
+            entry.abortListener = abortListener;
+            signal.addEventListener('abort', abortListener, { once: true });
+            let entries = SIGNAL_REGISTRY.get(signal);
+            if (!entries) {
+                entries = new Set();
+                SIGNAL_REGISTRY.set(signal, entries);
+            }
+            entries.add(entry);
+        }
+    }
+
+    function removeEventListenerInternal(target, type, listener, options) {
+        target = normalizeEventTargetReceiver(target);
+        const normalizedType = normalizeEventType(type);
+        if (!normalizedType) {
+            return;
+        }
+        const { capture } = normalizeRemoveOptions(options);
+        const record = getEventTargetRecord(target, false);
+        if (!record) {
+            return;
+        }
+        const buckets = getListenerBuckets(record, normalizedType, false);
+        if (!buckets) {
+            return;
+        }
+        const bucket = capture ? buckets.capture : buckets.bubble;
+        if (!bucket) {
+            return;
+        }
+        for (let i = 0; i < bucket.length; i++) {
+            const entry = bucket[i];
+            if (entry.originalCallback === listener && entry.capture === capture) {
+                removeListenerEntry(record, normalizedType, entry, bucket, i);
+                break;
+            }
+        }
+    }
+
+    const EventTargetCtor = function EventTarget() {
+        if (!(this instanceof EventTargetCtor)) {
+            throw new TypeError('Constructor EventTarget requires "new"');
+        }
+        ensureEventTargetRecord(this);
+    };
+
+    const EventTargetProto = EventTargetCtor.prototype;
+
+    Object.defineProperty(EventTargetProto, 'constructor', {
+        value: EventTargetCtor,
+        configurable: true,
+        writable: true,
+    });
+
+    EventTargetProto.addEventListener = function (type, listener, options) {
+        addEventListenerInternal(this, type, listener, options);
+    };
+
+    EventTargetProto.removeEventListener = function (type, listener, options) {
+        removeEventListenerInternal(this, type, listener, options);
+    };
+
+    EventTargetProto.dispatchEvent = function (event) {
+        const target = normalizeEventTargetReceiver(this);
+        const result = dispatchEventInternal(target, event, null);
+        return !result.defaultPrevented;
+    };
+
+    Object.defineProperty(EventTargetProto, Symbol.toStringTag, {
+        value: 'EventTarget',
+        configurable: true,
+    });
+
+    ensureEventTargetRecord(global);
+    global.EventTarget = EventTargetCtor;
+    global.addEventListener = EventTargetProto.addEventListener;
+    global.removeEventListener = EventTargetProto.removeEventListener;
+    global.dispatchEvent = EventTargetProto.dispatchEvent;
+
+    function ensureDomException() {
+        if (typeof global.DOMException === 'function') {
+            return;
+        }
+        const DOMExceptionCtor = function DOMException(message = '', name = 'Error') {
+            this.message = String(message);
+            this.name = String(name);
+            this.code = DOM_EXCEPTION_CODES[this.name] ?? 0;
+        };
+        DOMExceptionCtor.prototype = Object.create(Error.prototype);
+        Object.defineProperty(DOMExceptionCtor.prototype, 'constructor', {
+            value: DOMExceptionCtor,
+            configurable: true,
+            writable: true,
+        });
+        Object.defineProperty(DOMExceptionCtor.prototype, 'toString', {
+            value() {
+                return `${this.name}: ${this.message}`;
+            },
+            configurable: true,
+        });
+        global.DOMException = DOMExceptionCtor;
+    }
+
+    function domException(name, message) {
+        ensureDomException();
+        return new global.DOMException(message, name);
+    }
+
+    function initializeEventInstance(event, type, init, trusted) {
+        if (type == null) {
+            throw new TypeError('Failed to construct "Event": 1 argument required');
+        }
+        const typeString = String(type);
+        if (typeString === '') {
+            throw new TypeError('Failed to construct "Event": The event type cannot be the empty string');
+        }
+        const options = init && typeof init === 'object' ? init : {};
+        event.type = typeString;
+        event.bubbles = !!options.bubbles;
+        event.cancelable = !!options.cancelable;
+        event.composed = !!options.composed;
+        event.defaultPrevented = !!options.defaultPrevented;
+        event.isTrusted = !!trusted;
+        event.target = null;
+        event.currentTarget = null;
+        event.srcElement = null;
+        event.eventPhase = 0;
+        event.timeStamp = Date.now();
+        event._propagationStopped = false;
+        event._immediatePropagationStopped = false;
+        event._passiveListener = false;
+        event._redrawRequested = false;
+        event._dispatchFlag = false;
+        event._initialized = true;
+        event._path = [];
+    }
+
+    function prepareEventForDispatch(event, target, path) {
+        event._dispatchFlag = true;
+        event._propagationStopped = false;
+        event._immediatePropagationStopped = false;
+        event._redrawRequested = false;
+        event._passiveListener = false;
+        event._path = path.slice();
+        event.target = target;
+        event.srcElement = target;
+        event.currentTarget = null;
+        event.eventPhase = 0;
+    }
+
+    function finalizeEventAfterDispatch(event) {
+        event._dispatchFlag = false;
+        event.currentTarget = null;
+        event.eventPhase = 0;
+        event._path = [];
+        event._passiveListener = false;
+    }
+
+    function activeListeners(record, type, capture) {
+        const buckets = getListenerBuckets(record, type, false);
+        if (!buckets) {
+            return [];
+        }
+        const bucket = capture ? buckets.capture : buckets.bubble;
+        if (!bucket || bucket.length === 0) {
+            return [];
+        }
+        const result = [];
+        for (const entry of bucket) {
+            if (!entry || entry.removed) {
+                continue;
+            }
+            if (entry.signal && entry.signal.aborted) {
+                removeListenerEntry(record, type, entry);
+                continue;
+            }
+            result.push(entry);
+        }
+        return result;
+    }
+
+    function invokeListenerList(target, type, event, listeners, phase) {
+        if (listeners.length === 0) {
+            return;
+        }
+        const record = getEventTargetRecord(target, false);
+        if (!record) {
+            return;
+        }
+        const snapshot = listeners.slice();
+
+        for (const entry of snapshot) {
+            if (!entry || entry.removed) {
+                continue;
+            }
+            if (entry.signal && entry.signal.aborted) {
+                removeListenerEntry(record, type, entry);
+                continue;
+            }
+
+            const removedBeforeCall = entry.once && !entry.removed;
+            if (removedBeforeCall) {
+                removeListenerEntry(record, type, entry);
+            }
+
+            event.currentTarget = target;
+            event.eventPhase = phase;
+            event._passiveListener = !!entry.passive;
+
+            try {
+                entry.listener.call(target, event);
+            } catch (error) {
+                const descriptor = `listener failure: ${error instanceof Error ? error.message : error} | listenerType=${typeof entry.listener} | callType=${typeof (entry.listener && entry.listener.call)}`;
+                throw new Error(descriptor);
+            }
+
+            event._passiveListener = false;
+
+            if (entry.once && !removedBeforeCall) {
+                removeListenerEntry(record, type, entry);
+            }
+
+            if (event._immediatePropagationStopped) {
+                break;
+            }
+        }
+    }
+
+    function buildPropagationPath(targetNode, providedHandles) {
+        if (Array.isArray(providedHandles) && providedHandles.length > 0) {
+            const path = providedHandles
+                .map((handle) => wrapHandle(handle))
+                .filter((node) => node != null);
+            if (path.length === 0) {
+                return [targetNode];
+            }
+            if (path[0] !== targetNode) {
+                path.unshift(targetNode);
+            }
+            const last = path[path.length - 1];
+            if (last !== global.document) {
+                path.push(global.document);
+            }
+            return path;
+        }
+
+        const path = [];
+        let current = targetNode;
+        while (current) {
+            path.push(current);
+            if (!current.parentNode || current === global.document) {
+                break;
+            }
+            current = current.parentNode;
+        }
+        const last = path[path.length - 1];
+        const shouldAppendDocument =
+            global.document &&
+            last !== global.document &&
+            targetNode &&
+            typeof targetNode === 'object' &&
+            targetNode !== global &&
+            targetNode !== global.document &&
+            (HANDLE in targetNode);
+        if (shouldAppendDocument) {
+            path.push(global.document);
+        }
+        return path;
+    }
+
+    function dispatchEventInternal(target, event, providedPath) {
+        if (event == null || (typeof event !== 'object' && typeof event !== 'function')) {
+            throw new TypeError(
+                'Failed to execute "dispatchEvent" on "EventTarget": parameter 1 is not of type "Event"',
+            );
+        }
+        const typeValue = event.type;
+        if (typeof typeValue !== 'string') {
+            throw new TypeError('Failed to execute "dispatchEvent": The event.type property must be a string');
+        }
+        if (event._dispatchFlag) {
+            throw domException('InvalidStateError', 'The event is already being dispatched');
+        }
+        if (event._initialized === false) {
+            throw domException('InvalidStateError', 'The event has not been initialized');
+        }
+        if (typeValue.length === 0) {
+            throw new TypeError('Failed to execute "dispatchEvent": The event type cannot be the empty string');
+        }
+
+        const normalizedType = normalizeEventType(typeValue);
+        const targetRecordInitial = getEventTargetRecord(target, false);
+        if (targetRecordInitial) {
+            // Removal during dispatch may prevent additional bubbling but should not abort future events.
+        }
+        const path = providedPath ?? buildPropagationPath(target, null);
+        prepareEventForDispatch(event, target, path);
+
+        const ancestors = path.slice(1);
+        const captureTargets = ancestors.slice().reverse();
+
+        for (const node of captureTargets) {
+            if (event._propagationStopped) {
+                break;
+            }
+            const record = getEventTargetRecord(node, false);
+            if (!record) {
+                continue;
+            }
+            const listeners = activeListeners(record, normalizedType, true);
+            invokeListenerList(node, normalizedType, event, listeners, CAPTURING_PHASE);
+        }
+
+        if (!event._propagationStopped) {
+            const targetRecord = targetRecordInitial;
+            if (targetRecord) {
+                const captureListeners = activeListeners(targetRecord, normalizedType, true);
+                if (captureListeners.length > 0) {
+                    invokeListenerList(target, normalizedType, event, captureListeners, AT_TARGET);
+                }
+                if (!event._propagationStopped) {
+                    const bubbleListeners = activeListeners(targetRecord, normalizedType, false);
+                    if (bubbleListeners.length > 0) {
+                        invokeListenerList(target, normalizedType, event, bubbleListeners, AT_TARGET);
+                    }
+                }
+            }
+        }
+
+        if (!event._propagationStopped && event.bubbles) {
+            for (const node of ancestors) {
+                if (event._propagationStopped) {
+                    break;
+                }
+                const record = getEventTargetRecord(node, false);
+                if (!record) {
+                    continue;
+                }
+                const bubbleListeners = activeListeners(record, normalizedType, false);
+                if (bubbleListeners.length === 0) {
+                    continue;
+                }
+                invokeListenerList(node, normalizedType, event, bubbleListeners, BUBBLING_PHASE);
+            }
+        }
+
+        const result = {
+            defaultPrevented: !!event.defaultPrevented,
+            redrawRequested: !!event._redrawRequested,
+            propagationStopped: !!event._propagationStopped,
+        };
+
+        finalizeEventAfterDispatch(event);
+
+        return result;
     }
 
     function toHandle(node) {
@@ -1220,6 +1836,7 @@ const DOM_BOOTSTRAP: &str = r#"
         }
         const node = Object.create(proto);
         node[HANDLE] = String(handle);
+        associateEventTargetHandle(node, handle);
         return node;
     }
 
@@ -1321,75 +1938,17 @@ const DOM_BOOTSTRAP: &str = r#"
         },
         normalize() {},
         addEventListener(type, listener, options) {
-            if (typeof listener !== 'function') {
-                return;
-            }
-            const normalizedType = normalizeEventType(type);
-            const handle = toHandle(this);
-            let capture = false;
-            let once = false;
-            if (options === true) {
-                capture = true;
-            } else if (options && typeof options === 'object') {
-                capture = !!options.capture;
-                once = !!options.once;
-            }
-            const buckets = getListenerBuckets(handle, normalizedType, true);
-            const bucket = capture ? buckets.capture : buckets.bubble;
-            if (bucket.some((entry) => entry.callback === listener)) {
-                return;
-            }
-            bucket.push({ callback: listener, once });
-            registerListener(handle, normalizedType);
+            EventTargetProto.addEventListener.call(this, type, listener, options);
         },
         removeEventListener(type, listener, options) {
-            if (typeof listener !== 'function') {
-                return;
-            }
-            const normalizedType = normalizeEventType(type);
-            const handle = toHandle(this);
-            const key = String(handle);
-            const typeMap = listenerStore.get(key);
-            if (!typeMap) {
-                return;
-            }
-            let capture = false;
-            if (options === true) {
-                capture = true;
-            } else if (options && typeof options === 'object') {
-                capture = !!options.capture;
-            }
-            const buckets = typeMap.get(normalizedType);
-            if (!buckets) {
-                return;
-            }
-            const bucket = capture ? buckets.capture : buckets.bubble;
-            const index = bucket.findIndex((entry) => entry.callback === listener);
-            if (index === -1) {
-                return;
-            }
-            bucket.splice(index, 1);
-            if (buckets.capture.length === 0 && buckets.bubble.length === 0) {
-                typeMap.delete(normalizedType);
-                unregisterListener(handle, normalizedType);
-                if (typeMap.size === 0) {
-                    listenerStore.delete(key);
-                }
-            }
+            EventTargetProto.removeEventListener.call(this, type, listener, options);
         },
         dispatchEvent(event) {
-            if (!event || typeof event.type !== 'string') {
-                return false;
-            }
-            const result = frontier.__dispatchDomEvent(
-                toHandle(this),
-                event.type,
-                Object.assign({}, event),
-                []
-            );
-            return !(result && result.defaultPrevented);
+            return EventTargetProto.dispatchEvent.call(this, event);
         },
     };
+
+    Object.setPrototypeOf(NodeProto, EventTargetProto);
 
     const CharacterDataProto = Object.create(NodeProto);
     Object.defineProperty(CharacterDataProto, 'data', {
@@ -1694,6 +2253,26 @@ const DOM_BOOTSTRAP: &str = r#"
     DocumentProto.createDocumentFragment = function () {
         return createDocumentFragment();
     };
+    DocumentProto.createEvent = function (interfaceName) {
+        const name = String(interfaceName ?? '');
+        const event = createLegacyEvent(name);
+        if (name === 'CustomEvent' && CustomEventCtorRef) {
+            Object.setPrototypeOf(event, CustomEventCtorRef.prototype);
+            event.detail = null;
+        } else if ((name === 'MessageEvent' || name === 'MessageEvents') && MessageEventCtorRef) {
+            Object.setPrototypeOf(event, MessageEventCtorRef.prototype);
+            event.data = null;
+            event.origin = '';
+            event.lastEventId = '';
+            event.source = null;
+            event.ports = [];
+        } else if (!EventCtorRef || Object.getPrototypeOf(event) !== EventCtorRef.prototype) {
+            if (EventCtorRef) {
+                Object.setPrototypeOf(event, EventCtorRef.prototype);
+            }
+        }
+        return event;
+    };
     DocumentProto.getElementById = function (id) {
         const handle = global.__frontier_dom_get_handle_by_id(String(id));
         return wrapHandle(handle, 1);
@@ -1810,6 +2389,7 @@ const DOM_BOOTSTRAP: &str = r#"
             }
         },
     };
+    Object.setPrototypeOf(FragmentProto, EventTargetProto);
     Object.defineProperty(FragmentProto, 'firstChild', {
         get() {
             return this.__children[0] ?? null;
@@ -1836,6 +2416,7 @@ const DOM_BOOTSTRAP: &str = r#"
         const fragment = Object.create(FragmentProto);
         fragment.__children = [];
         fragment.ownerDocument = global.document;
+        ensureEventTargetRecord(fragment);
         return fragment;
     }
 
@@ -1860,6 +2441,7 @@ const DOM_BOOTSTRAP: &str = r#"
             }
             Object.setPrototypeOf(document, DocumentProto);
             document[HANDLE] = String(docHandle);
+            associateEventTargetHandle(document, docHandle);
             global.document = document;
             NODE_CACHE.set(String(docHandle), document);
             return true;
@@ -1899,44 +2481,68 @@ const DOM_BOOTSTRAP: &str = r#"
     const AT_TARGET = 2;
     const BUBBLING_PHASE = 3;
 
-    function buildPropagationPath(targetNode, providedHandles) {
-        if (Array.isArray(providedHandles) && providedHandles.length > 0) {
-            const path = providedHandles.map((handle) => wrapHandle(handle));
-            if (path[path.length - 1] !== global.document) {
-                path.push(global.document);
+    function createEvent(type, target, detail, trusted = false) {
+        const init = detail && typeof detail === 'object' ? detail : {};
+        let proto = EventCtorRef ? EventCtorRef.prototype : null;
+        if (!proto && typeof global.Event === 'function') {
+            proto = global.Event.prototype;
+        }
+        const event = proto ? Object.create(proto) : {};
+        initializeEventInstance(event, type, init, !!trusted);
+        for (const key of Object.keys(init)) {
+            if (key === 'bubbles' || key === 'cancelable' || key === 'composed' || key === 'defaultPrevented') {
+                continue;
             }
-            return path;
+            event[key] = init[key];
         }
-        const path = [];
-        let current = targetNode;
-        while (current) {
-            path.push(current);
-            current = current.parentNode;
+        if (init.defaultPrevented) {
+            event.defaultPrevented = true;
         }
-        if (path[path.length - 1] !== global.document) {
-            path.push(global.document);
+        if (target) {
+            event.target = target;
+            event.srcElement = target;
         }
-        return path;
+        return event;
     }
 
-    function createEvent(type, target, detail) {
-        const event = {
-            type: String(type),
-            target,
-            currentTarget: null,
-            eventPhase: 0,
-            bubbles: true,
-            cancelable: true,
-            defaultPrevented: false,
-            isTrusted: true,
-            timeStamp: Date.now(),
-            _propagationStopped: false,
-            _immediatePropagationStopped: false,
-            _redrawRequested: false,
+    function createLegacyEvent(_interfaceName) {
+        const event = EventCtorRef ? Object.create(EventCtorRef.prototype) : {};
+        event.type = '';
+        event.bubbles = false;
+        event.cancelable = false;
+        event.composed = false;
+        event.defaultPrevented = false;
+        event.isTrusted = false;
+        event.target = null;
+        event.currentTarget = null;
+        event.srcElement = null;
+        event.eventPhase = 0;
+        event.timeStamp = Date.now();
+        event._propagationStopped = false;
+        event._immediatePropagationStopped = false;
+        event._passiveListener = false;
+        event._redrawRequested = false;
+        event._dispatchFlag = false;
+        event._initialized = false;
+        event._path = [];
+        return event;
+    }
+
+    function installEventConstructors() {
+        const EventCtor = function Event(type, init = {}) {
+            if (!(this instanceof EventCtor)) {
+                throw new TypeError('Constructor Event requires "new"');
+            }
+            initializeEventInstance(this, type, init, false);
+        };
+
+        EventCtor.prototype = {
+            constructor: EventCtor,
             preventDefault() {
-                if (this.cancelable) {
-                    this.defaultPrevented = true;
+                if (!this.cancelable || this._passiveListener) {
+                    return;
                 }
+                this.defaultPrevented = true;
             },
             stopPropagation() {
                 this._propagationStopped = true;
@@ -1945,77 +2551,223 @@ const DOM_BOOTSTRAP: &str = r#"
                 this._propagationStopped = true;
                 this._immediatePropagationStopped = true;
             },
+            composedPath() {
+                return Array.isArray(this._path) ? this._path.slice() : [];
+            },
             requestRedraw() {
                 this._redrawRequested = true;
             },
-        };
-        if (detail && typeof detail === 'object') {
-            for (const key of Object.keys(detail)) {
-                event[key] = detail[key];
-            }
-            if (detail.bubbles != null) {
-                event.bubbles = !!detail.bubbles;
-            }
-            if (detail.cancelable != null) {
-                event.cancelable = !!detail.cancelable;
-            }
-        }
-        event.altKey = !!event.altKey;
-        event.ctrlKey = !!event.ctrlKey;
-        event.metaKey = !!event.metaKey;
-        event.shiftKey = !!event.shiftKey;
-        if (typeof global.Event === 'function') {
-            Object.setPrototypeOf(event, global.Event.prototype);
-        }
-        if (
-            (type === 'message' || type === 'messageerror') &&
-            typeof global.MessageEvent === 'function'
-        ) {
-            Object.setPrototypeOf(event, global.MessageEvent.prototype);
-        }
-        return event;
-    }
-
-    function installEventConstructors() {
-        if (typeof global.Event !== 'function') {
-            const EventCtor = function Event(type, init = {}) {
-                if (type == null) {
-                    throw new TypeError('Failed to construct "Event": 1 argument required');
+            initEvent(type, bubbles = false, cancelable = false) {
+                if (this._dispatchFlag) {
+                    return;
                 }
-                const event = createEvent(type, null, init);
-                Object.setPrototypeOf(event, EventCtor.prototype);
-                return event;
-            };
-            EventCtor.prototype = {};
-            Object.defineProperty(EventCtor.prototype, 'constructor', {
-                value: EventCtor,
-                configurable: true,
-                writable: true,
-            });
-            global.Event = EventCtor;
-        }
+                const value = String(type ?? '');
+                this.type = value;
+                this.bubbles = !!bubbles;
+                this.cancelable = !!cancelable;
+                this.defaultPrevented = false;
+                this._propagationStopped = false;
+                this._immediatePropagationStopped = false;
+                this._initialized = value.length > 0;
+            },
+        };
 
-        if (typeof global.MessageEvent !== 'function') {
-            const MessageEventCtor = function MessageEvent(type, init = {}) {
-                const event = createEvent(type, null, init);
-                event.data = init && Object.prototype.hasOwnProperty.call(init, 'data') ? init.data : null;
-                event.origin = init && Object.prototype.hasOwnProperty.call(init, 'origin') ? init.origin : '';
-                event.lastEventId = init && Object.prototype.hasOwnProperty.call(init, 'lastEventId') ? init.lastEventId : '';
-                event.source = init && Object.prototype.hasOwnProperty.call(init, 'source') ? init.source : null;
-                event.ports = init && Object.prototype.hasOwnProperty.call(init, 'ports') ? init.ports : [];
-                Object.setPrototypeOf(event, MessageEventCtor.prototype);
-                return event;
-            };
-            const eventProto = typeof global.Event === 'function' ? global.Event.prototype : Object.prototype;
-            MessageEventCtor.prototype = Object.create(eventProto);
-            Object.defineProperty(MessageEventCtor.prototype, 'constructor', {
-                value: MessageEventCtor,
-                configurable: true,
-                writable: true,
-            });
-            global.MessageEvent = MessageEventCtor;
+        Object.defineProperty(EventCtor.prototype, Symbol.toStringTag, {
+            value: 'Event',
+            configurable: true,
+        });
+
+        Object.defineProperty(EventCtor.prototype, 'cancelBubble', {
+            get() {
+                return !!this._propagationStopped;
+            },
+            set(value) {
+                if (value) {
+                    this.stopPropagation();
+                }
+            },
+            configurable: true,
+        });
+
+        Object.defineProperty(EventCtor.prototype, 'returnValue', {
+            get() {
+                return !this.defaultPrevented;
+            },
+            set(value) {
+                if (value === false) {
+                    this.preventDefault();
+                }
+            },
+            configurable: true,
+        });
+
+        EventCtorRef = EventCtor;
+        global.Event = EventCtor;
+
+        const MessageEventCtor = function MessageEvent(type, init = {}) {
+            if (!(this instanceof MessageEventCtor)) {
+                throw new TypeError('Constructor MessageEvent requires "new"');
+            }
+            initializeEventInstance(this, type, init, false);
+            this.data = Object.prototype.hasOwnProperty.call(init ?? {}, 'data') ? init.data : null;
+            this.origin = Object.prototype.hasOwnProperty.call(init ?? {}, 'origin') ? init.origin : '';
+            this.lastEventId = Object.prototype.hasOwnProperty.call(init ?? {}, 'lastEventId')
+                ? init.lastEventId
+                : '';
+            this.source = Object.prototype.hasOwnProperty.call(init ?? {}, 'source') ? init.source : null;
+            this.ports = Object.prototype.hasOwnProperty.call(init ?? {}, 'ports') ? init.ports : [];
+        };
+        MessageEventCtor.prototype = Object.create(EventCtor.prototype);
+        Object.defineProperty(MessageEventCtor.prototype, 'constructor', {
+            value: MessageEventCtor,
+            configurable: true,
+            writable: true,
+        });
+        Object.defineProperty(MessageEventCtor.prototype, Symbol.toStringTag, {
+            value: 'MessageEvent',
+            configurable: true,
+        });
+        MessageEventCtorRef = MessageEventCtor;
+        global.MessageEvent = MessageEventCtor;
+
+        const CustomEventCtor = function CustomEvent(type, init = {}) {
+            if (!(this instanceof CustomEventCtor)) {
+                throw new TypeError('Constructor CustomEvent requires "new"');
+            }
+            initializeEventInstance(this, type, init, false);
+            this.detail = Object.prototype.hasOwnProperty.call(init ?? {}, 'detail') ? init.detail : null;
+        };
+        CustomEventCtor.prototype = Object.create(EventCtor.prototype);
+        Object.defineProperty(CustomEventCtor.prototype, 'constructor', {
+            value: CustomEventCtor,
+            configurable: true,
+            writable: true,
+        });
+        CustomEventCtor.prototype.initCustomEvent = function (type, bubbles, cancelable, detail) {
+            if (this._dispatchFlag) {
+                return;
+            }
+            const value = String(type ?? '');
+            this.type = value;
+            this.bubbles = !!bubbles;
+            this.cancelable = !!cancelable;
+            this.detail = detail;
+            this.defaultPrevented = false;
+            this._initialized = value.length > 0;
+        };
+        Object.defineProperty(CustomEventCtor.prototype, Symbol.toStringTag, {
+            value: 'CustomEvent',
+            configurable: true,
+        });
+        CustomEventCtorRef = CustomEventCtor;
+        global.CustomEvent = CustomEventCtor;
+    }
+
+    function clearSignalRegistrations(signal) {
+        const entries = SIGNAL_REGISTRY.get(signal);
+        if (!entries) {
+            return;
+        }
+        SIGNAL_REGISTRY.delete(signal);
+        for (const entry of Array.from(entries)) {
+            if (!entry || entry.removed) {
+                continue;
+            }
+            removeListenerEntry(entry.ownerRecord, entry.eventType, entry);
         }
     }
+
+    function abortSignalInternal(signal, reason) {
+        if (signal._aborted) {
+            return;
+        }
+        signal._aborted = true;
+        signal._reason = reason ?? domException('AbortError', 'The operation was aborted.');
+        clearSignalRegistrations(signal);
+        const abortEvent = createEvent('abort', signal, { bubbles: false, cancelable: false }, false);
+        EventTargetProto.dispatchEvent.call(signal, abortEvent);
+    }
+
+    const AbortSignalCtor = function AbortSignal() {
+        throw new TypeError('Illegal constructor');
+    };
+    AbortSignalCtor.prototype = Object.create(EventTargetProto);
+    Object.defineProperty(AbortSignalCtor.prototype, 'constructor', {
+        value: AbortSignalCtor,
+        configurable: true,
+        writable: true,
+    });
+    Object.defineProperty(AbortSignalCtor.prototype, Symbol.toStringTag, {
+        value: 'AbortSignal',
+        configurable: true,
+    });
+    Object.defineProperty(AbortSignalCtor.prototype, 'aborted', {
+        get() {
+            return !!this._aborted;
+        },
+        configurable: true,
+    });
+    Object.defineProperty(AbortSignalCtor.prototype, 'reason', {
+        get() {
+            return this._reason;
+        },
+        configurable: true,
+    });
+    AbortSignalCtor.prototype.throwIfAborted = function () {
+        if (this.aborted) {
+            throw this._reason ?? domException('AbortError', 'The operation was aborted.');
+        }
+    };
+
+    AbortSignalCtor.abort = function (reason) {
+        const signal = Object.create(AbortSignalCtor.prototype);
+        ensureEventTargetRecord(signal);
+        signal._aborted = true;
+        signal._reason = reason ?? domException('AbortError', 'The operation was aborted.');
+        signal[ABORT_SIGNAL_FLAG] = true;
+        return signal;
+    };
+
+    AbortSignalCtor.timeout = function (milliseconds) {
+        const controller = new AbortControllerCtor();
+        const ms = Number(milliseconds);
+        if (Number.isFinite(ms) && ms >= 0) {
+            setTimeout(() => {
+                if (!controller.signal._aborted) {
+                    abortSignalInternal(
+                        controller.signal,
+                        domException('TimeoutError', 'The operation timed out.'),
+                    );
+                }
+            }, ms);
+        }
+        return controller.signal;
+    };
+
+    const AbortControllerCtor = function AbortController() {
+        if (!(this instanceof AbortControllerCtor)) {
+            throw new TypeError('Constructor AbortController requires "new"');
+        }
+        const signal = Object.create(AbortSignalCtor.prototype);
+        ensureEventTargetRecord(signal);
+        signal._aborted = false;
+        signal._reason = undefined;
+        signal[ABORT_SIGNAL_FLAG] = true;
+        this.signal = signal;
+    };
+    AbortControllerCtor.prototype.abort = function (reason) {
+        if (!this.signal || this.signal._aborted) {
+            return;
+        }
+        abortSignalInternal(this.signal, reason ?? domException('AbortError', 'The operation was aborted.'));
+    };
+    Object.defineProperty(AbortControllerCtor.prototype, Symbol.toStringTag, {
+        value: 'AbortController',
+        configurable: true,
+    });
+
+    global.AbortSignal = AbortSignalCtor;
+    global.AbortController = AbortControllerCtor;
 
     function installMessagingPolyfills() {
         if (typeof global.MessageChannel !== 'function') {
@@ -2106,46 +2858,6 @@ const DOM_BOOTSTRAP: &str = r#"
         }
     }
 
-    function invokeListenersOnNode(handle, node, type, event, capturePhase) {
-        const typeMap = listenerStore.get(String(handle));
-        if (!typeMap) {
-            return true;
-        }
-        const buckets = typeMap.get(type);
-        if (!buckets) {
-            return true;
-        }
-        const bucket = capturePhase ? buckets.capture : buckets.bubble;
-        if (!bucket || bucket.length === 0) {
-            return true;
-        }
-        const callbacks = bucket.slice();
-        for (const entry of callbacks) {
-            if (event._immediatePropagationStopped) {
-                break;
-            }
-            try {
-                entry.callback.call(node, event);
-            } catch (err) {
-                console.error(err);
-            }
-            if (entry.once) {
-                const index = bucket.indexOf(entry);
-                if (index !== -1) {
-                    bucket.splice(index, 1);
-                }
-            }
-        }
-        if (buckets.capture.length === 0 && buckets.bubble.length === 0) {
-            typeMap.delete(type);
-            unregisterListener(handle, type);
-            if (typeMap.size === 0) {
-                listenerStore.delete(String(handle));
-            }
-        }
-        return !event._propagationStopped;
-    }
-
     frontier.__dispatchDomEvent = function (handle, type, detail, pathHandles) {
         const target = wrapHandle(handle);
         if (!target) {
@@ -2155,36 +2867,10 @@ const DOM_BOOTSTRAP: &str = r#"
                 propagationStopped: false,
             };
         }
-        const normalizedType = normalizeEventType(type);
+        const event = createEvent(type, target, detail || {}, true);
         const path = buildPropagationPath(target, pathHandles);
-        const event = createEvent(normalizedType, target, detail || {});
-
-        const capturePath = path.slice().reverse();
-        for (let i = 0; i < capturePath.length; i++) {
-            const node = capturePath[i];
-            event.currentTarget = node;
-            event.eventPhase = CAPTURING_PHASE;
-            if (!invokeListenersOnNode(node[HANDLE], node, normalizedType, event, true)) {
-                break;
-            }
-        }
-
-        if (!event._propagationStopped) {
-            for (let i = 0; i < path.length; i++) {
-                const node = path[i];
-                event.currentTarget = node;
-                event.eventPhase = i === 0 ? AT_TARGET : BUBBLING_PHASE;
-                if (!invokeListenersOnNode(node[HANDLE], node, normalizedType, event, false)) {
-                    break;
-                }
-            }
-        }
-
-        return {
-            defaultPrevented: event.defaultPrevented,
-            redrawRequested: event._redrawRequested,
-            propagationStopped: event._propagationStopped,
-        };
+        const result = dispatchEventInternal(target, event, path);
+        return result;
     };
 
     const TIMER_STORE = new Map();

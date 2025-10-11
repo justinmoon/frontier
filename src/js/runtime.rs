@@ -15,6 +15,7 @@ impl QuickJsEngine {
     /// Create a new QuickJS engine with `console.log` wired up to `tracing`.
     pub fn new() -> Result<Self> {
         let runtime = Runtime::new().context("failed to create QuickJS runtime")?;
+        runtime.set_max_stack_size(8 * 1024 * 1024);
         let context = Context::full(&runtime).context("failed to create QuickJS context")?;
         let engine = Self {
             _runtime: runtime,
