@@ -13,7 +13,7 @@ use frontier::js::session::JsPageRuntime;
 use frontier::navigation::{self, FetchRequest, FetchSource, FetchedDocument};
 use keyboard_types::{Code, Key, Location, Modifiers};
 use std::ops::DerefMut;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Builder;
@@ -266,6 +266,28 @@ where
     result
 }
 
+fn parse_elapsed_seconds(text: &str) -> f64 {
+    let prefix = "Elapsed: ";
+    let suffix = "s";
+    let without_prefix = text
+        .strip_prefix(prefix)
+        .unwrap_or_else(|| panic!("missing prefix in '{text}'"));
+    let number_str = without_prefix
+        .strip_suffix(suffix)
+        .unwrap_or_else(|| panic!("missing suffix in '{text}'"));
+    number_str
+        .parse::<f64>()
+        .unwrap_or_else(|err| panic!("failed to parse elapsed seconds from '{text}': {err}"))
+}
+
+fn react_demo_asset(file_name: &str) -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("assets");
+    path.push("react-demos");
+    path.push(file_name);
+    path
+}
+
 #[test]
 fn dom_api_supports_creating_elements() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
@@ -479,8 +501,7 @@ fn runtime_document_handles_keyboard_and_ime_events() {
 fn react_counter_sample_executes() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
-        let asset_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/react-counter/index.html");
+        let asset_path = react_demo_asset("counter.html");
         let file_url = Url::from_file_path(&asset_path).expect("file url");
 
         let fetch_request = FetchRequest {
@@ -548,5 +569,132 @@ fn react_counter_sample_executes() {
             .expect("counter node")
             .text_content();
         assert_eq!(updated_text, "Count: 1");
+    });
+}
+
+#[test]
+fn react_timer_demo_runs_when_started() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let asset_path = react_demo_asset("timer.html");
+        let file_url = Url::from_file_path(&asset_path).expect("file url");
+
+        let fetch_request = FetchRequest {
+            source: FetchSource::Url(file_url.clone()),
+            display_url: file_url.to_string(),
+        };
+
+        let net_callback = Arc::new(DummyNetCallback);
+        let net_provider = Arc::new(Provider::new(net_callback));
+
+        let document = navigation::execute_fetch(&fetch_request, Arc::clone(&net_provider))
+            .await
+            .expect("fetch timer asset");
+
+        let scripts = document.scripts.clone();
+
+        let mut runtime = JsPageRuntime::new(
+            &document.contents,
+            &scripts,
+            Some(document.base_url.as_str()),
+        )
+        .expect("create runtime")
+        .expect("runtime with scripts");
+
+        let mut html_doc = HtmlDocument::from_html(&document.contents, DocumentConfig::default());
+        runtime.attach_document(&mut html_doc);
+        let summary = runtime
+            .run_blocking_scripts()
+            .expect("execute scripts")
+            .expect("scripts executed");
+        assert!(summary.executed_scripts > 0);
+        runtime.environment().pump().expect("initial pump");
+
+        let timer_value_id = lookup_node_id(&mut html_doc, "timer-value").expect("timer value");
+        let start_id = lookup_node_id(&mut html_doc, "start-timer").expect("start button");
+        let stop_id = lookup_node_id(&mut html_doc, "stop-timer").expect("stop button");
+
+        let initial_text = html_doc
+            .get_node(timer_value_id)
+            .expect("timer node")
+            .text_content();
+        assert_eq!(initial_text, "Elapsed: 0.0s");
+
+        let start_chain = html_doc.node_chain(start_id);
+        let start_event = DomEvent::new(
+            start_id,
+            DomEventData::Click(BlitzMouseButtonEvent {
+                x: 0.0,
+                y: 0.0,
+                button: MouseEventButton::Main,
+                buttons: MouseEventButtons::Primary,
+                mods: Modifiers::default(),
+            }),
+        );
+
+        runtime
+            .environment()
+            .dispatch_dom_event(&start_event, &start_chain)
+            .expect("dispatch start");
+
+        for _ in 0..12 {
+            runtime.environment().pump().expect("pump while running");
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        let running_text = html_doc
+            .get_node(timer_value_id)
+            .expect("timer node")
+            .text_content();
+        assert_ne!(
+            running_text, initial_text,
+            "timer should advance while running"
+        );
+        let running_value = parse_elapsed_seconds(&running_text);
+        assert!(
+            running_value >= 0.2,
+            "expected timer to advance, got {running_value}"
+        );
+
+        let stop_chain = html_doc.node_chain(stop_id);
+        let stop_event = DomEvent::new(
+            stop_id,
+            DomEventData::Click(BlitzMouseButtonEvent {
+                x: 0.0,
+                y: 0.0,
+                button: MouseEventButton::Main,
+                buttons: MouseEventButtons::Primary,
+                mods: Modifiers::default(),
+            }),
+        );
+
+        runtime
+            .environment()
+            .dispatch_dom_event(&stop_event, &stop_chain)
+            .expect("dispatch stop");
+
+        runtime.environment().pump().expect("pump after stop");
+        let stopped_text = html_doc
+            .get_node(timer_value_id)
+            .expect("timer node")
+            .text_content();
+        let stopped_value = parse_elapsed_seconds(&stopped_text);
+
+        for _ in 0..6 {
+            runtime.environment().pump().expect("pump while stopped");
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        let after_stop_text = html_doc
+            .get_node(timer_value_id)
+            .expect("timer node")
+            .text_content();
+        let after_stop_value = parse_elapsed_seconds(&after_stop_text);
+
+        assert_eq!(
+            stopped_text, after_stop_text,
+            "timer should freeze after stopping"
+        );
+        assert_eq!(stopped_value, after_stop_value);
     });
 }

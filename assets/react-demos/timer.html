@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>React Timer Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./vendor/react.production.min.js"></script>
+    <script src="./vendor/react-dom.production.min.js"></script>
+    <script>
+      (function () {
+        const { useEffect, useRef, useState } = React;
+        const TICK_MS = 100;
+
+        function formatElapsed(ms) {
+          const seconds = ms / 1000;
+          return seconds.toFixed(1);
+        }
+
+        function TimerDemo() {
+          const [elapsedMs, setElapsedMs] = useState(0);
+          const [isRunning, setIsRunning] = useState(false);
+          const intervalRef = useRef(null);
+
+          useEffect(() => {
+            if (isRunning && intervalRef.current === null) {
+              intervalRef.current = setInterval(() => {
+                setElapsedMs((value) => value + TICK_MS);
+              }, TICK_MS);
+            }
+            if (!isRunning && intervalRef.current !== null) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            return () => {
+              if (intervalRef.current !== null) {
+                clearInterval(intervalRef.current);
+                intervalRef.current = null;
+              }
+            };
+          }, [isRunning]);
+
+          const handleStart = function () {
+            if (!isRunning) {
+              setIsRunning(true);
+            }
+          };
+
+          const handleStop = function () {
+            if (isRunning) {
+              setIsRunning(false);
+            }
+          };
+
+          const handleReset = function () {
+            setElapsedMs(0);
+          };
+
+          return React.createElement(
+            "div",
+            { id: "timer-root" },
+            React.createElement(
+              "h1",
+              { id: "timer-heading" },
+              "Timer"
+            ),
+            React.createElement(
+              "p",
+              { id: "timer-value" },
+              `Elapsed: ${formatElapsed(elapsedMs)}s`
+            ),
+            React.createElement(
+              "div",
+              { id: "timer-controls" },
+              React.createElement(
+                "button",
+                { id: "start-timer", onClick: handleStart, disabled: isRunning },
+                "Start"
+              ),
+              React.createElement(
+                "button",
+                { id: "stop-timer", onClick: handleStop, disabled: !isRunning },
+                "Stop"
+              ),
+              React.createElement(
+                "button",
+                { id: "reset-timer", onClick: handleReset },
+                "Reset"
+              )
+            )
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById("root"));
+        root.render(React.createElement(TimerDemo));
+      })();
+    </script>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      #timer-root {
+        background: #1e293b;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.45);
+        width: 260px;
+      }
+      #timer-heading {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      #timer-value {
+        margin: 0 0 18px;
+        font-size: 18px;
+        font-variant-numeric: tabular-nums;
+      }
+      #timer-controls {
+        display: flex;
+        gap: 8px;
+      }
+      #timer-controls button {
+        flex: 1;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #start-timer {
+        background: #22c55e;
+        color: #052e16;
+      }
+      #stop-timer {
+        background: #f97316;
+        color: #431407;
+      }
+      #reset-timer {
+        background: #94a3b8;
+        color: #0f172a;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

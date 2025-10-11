@@ -1,30 +1,36 @@
-# React Micro-Demos Roadmap
+# React Demo WebDriver Plan
 
-## Why
-- We want confidence that Frontier’s QuickJS runtime and DOM bridge stay stable before layering complex stacks like Next.js/Ants.
-- React already runs a counter demo on master; expanding to a small battery of stateful components (timers, CRUD, filters) gives broad coverage of user interactions, timers, and keyed updates.
-- These fixtures become living regression tests, catching DOM/event regressions early and giving us a safe sandbox before we attempt nostr networking flows.
+## Goals
+- Ship a reusable WebDriver harness that can drive Frontier headlessly for small demo apps (counter, timer, future CRUD examples).
+- Cover deterministic end-to-end flows in `cargo test` / `just ci` so regressions are caught without manual GUI interaction.
+- Keep demo assets simple (plain HTML + vendored React bundles) and runnable without extra JS tooling.
 
-## Plan
-1. **Asset Scaffolding**
-   - Add `assets/react-demos/` containing standalone HTML bundles for each demo.
-   - Reuse the existing counter harness pattern so `quickjs_dom_test.rs` can spin up a runtime against each asset.
+## Core Requirements
+1. **Headless WebDriver service**
+   - `start_webdriver` must spin up entirely in tests (no winit window, no GUI) and expose the endpoints the harness relies on (`/session`, `/element/...`, `/frontier/pump`, `/status`).
+   - Provide a graceful shutdown handle so tests do not leak tasks.
 
-2. **Timer Demo**
-   - React component with Start/Stop buttons driving a `setInterval` clock state.
-   - Test pumps timers, toggles buttons, and asserts the displayed time advances only when running.
+2. **Selector + interaction support**
+   - Support reliable element lookup beyond `#id` selectors, or document the limit and fail fast when unsupported selectors are used.
+   - Translate WebDriver clicks into real DOM events via the runtime so React state updates are exercised.
+   - Add helpers for value reads (`/text`, future `/property`) and timer pumping so async UIs can be verified deterministically.
 
-3. **CRUD List Demo**
-   - Text input + add button producing list items with remove buttons.
-   - Test sends keyboard events and clicks via `RuntimeDocument`, asserting list length and contents mutate as expected.
+3. **Asset workflow**
+   - Keep `assets/react-demos/` self-contained by vendoring the React/ReactDOM UMD bundles (no `bun install` step).
+   - Document how to add a new demo (HTML stub + test) and ensure each demo ships with an automated WebDriver test case.
 
-4. **Filterable Table Demo**
-   - Render a static dataset and a filter input (7GUIs filtering task style) plus reset button.
-   - Test programmatically updates filter text and verifies DOM row counts refresh accordingly.
+4. **CI integration**
+   - Ensure at least one WebDriver test runs by default (no `#[ignore]`).
+   - Make the tests tolerant to slower CI boxes (use timeouts + polling instead of fixed sleeps where possible).
 
-5. **Harness & Helpers**
-   - Extend `tests/quickjs_dom_test.rs` with one test per demo, factoring helpers for repeated event dispatch (keydown, click, timer pump).
-   - Ensure each test serializes DOM at end and checks key selectors/handles.
+## Near-Term Tasks
+- Diagnose and fix the DOM bridge panic triggered when navigating from the index page into a demo ("DOM mutation failed: DOM bridge not attached" followed by the Stylo `ElementStyles::primary` unwrap). Reproduce via `just react-demos` and clicking a tile; land a regression test once the crash is resolved.
+- Extend `HeadlessSession` networking so WebDriver sessions can navigate to `http(s)` URLs when needed, or explicitly reject them with a clear error.
+- Flesh out the HTTP API with `/status` and capability negotiation so third-party clients (Selenium/Playwright) can be layered on later.
+- Add coverage for the timer demo (`webdriver_timer_start_stop`) once the timer can be driven without real-time sleeps (use pump endpoint).
+- Write docs in `notes/` for running the harness and debugging failures (log locations, enabling tracing).
 
-6. **Documentation**
-   - Capture setup + intended coverage in `notes/` so future devs know how/when to use or extend the demos.
+## Stretch Work
+- Broaden interaction surface (keyboard input, form submission, pointer move/drag).
+- Share the harness with other demo suites (nostr integrations, SQLite sample) once the basic flows are stable.
+- Mirror a subset of WebDriver conformance tests to guard protocol compatibility as the API grows.

@@ -62,6 +62,7 @@
             xorg.libXi
             xorg.libXrandr
             vulkan-loader
+            xdotool
           ];
 
           # Disable incremental builds for Nix
@@ -132,15 +133,12 @@
 
           shellHook = ''
             export RUST_BACKTRACE=1
-            echo "Frontier Browser development environment"
-            echo ""
-            echo "Available commands:"
-            echo "  just run          - Run the browser"
-            echo "  just test         - Run all tests"
-            echo "  just build        - Build the browser"
-            echo "  nix build         - Pure Nix build"
-            echo "  nix run           - Run from Nix build"
-            echo "  nix flake check   - Run all checks"
+            if command -v just >/dev/null 2>&1; then
+              echo "Available just recipes:"
+              just --list
+            else
+              echo "Install 'just' to list available recipes."
+            fi
           '';
         };
 
