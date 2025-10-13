@@ -53,7 +53,7 @@ impl HeadlessSessionBuilder {
 
 pub struct HeadlessSession {
     runtime: JsPageRuntime,
-    document: RuntimeDocument,
+    document: Box<RuntimeDocument>,
     net_provider: Arc<Provider<Resource>>,
     current_url: Url,
 }
@@ -82,14 +82,22 @@ impl HeadlessSession {
                 .context("create js runtime")?
                 .ok_or_else(|| anyhow!("document contained no executable scripts"))?;
 
-        let mut html_doc = HtmlDocument::from_html(
+        let html_doc = HtmlDocument::from_html(
             &fetched.contents,
             DocumentConfig {
                 base_url: Some(fetched.base_url.clone()),
                 ..Default::default()
             },
         );
-        runtime.attach_document(&mut html_doc);
+
+        // Box the RuntimeDocument to keep it at a stable heap location so the bridge
+        // pointer remains valid even when HeadlessSession is moved
+        let environment = runtime.environment();
+        let runtime_document = RuntimeDocument::new(html_doc, environment.clone());
+        let mut boxed_document = Box::new(runtime_document);
+
+        // Now attach the document at its stable heap location
+        runtime.attach_document(&mut boxed_document);
         if let Some(summary) = runtime
             .run_blocking_scripts()
             .context("execute inline scripts")?
@@ -104,12 +112,9 @@ impl HeadlessSession {
         }
         runtime.environment().pump().context("initial pump")?;
 
-        let environment = runtime.environment();
-        let runtime_document = RuntimeDocument::new(html_doc, environment.clone());
-
         Ok(Self {
             runtime,
-            document: runtime_document,
+            document: boxed_document,
             net_provider: net,
             current_url: url,
         })
@@ -136,7 +141,6 @@ impl HeadlessSession {
             }),
         );
         let environment = self.runtime.environment();
-        environment.reattach_document(&mut self.document);
         environment
             .dispatch_dom_event(&event, &chain)
             .context("dispatch click")?;
@@ -187,7 +191,7 @@ impl HeadlessSession {
         let id = selector
             .strip_prefix('#')
             .ok_or_else(|| anyhow!("only id selectors are supported (got {selector})"))?;
-        lookup_node_id(&mut self.document, id).ok_or_else(|| anyhow!("element id not found: {id}"))
+        lookup_node_id(&mut *self.document, id).ok_or_else(|| anyhow!("element id not found: {id}"))
     }
 
     pub fn current_url(&self) -> &Url {

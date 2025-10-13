@@ -35,9 +35,7 @@ fn runtime_document_with_environment(
     doc: HtmlDocument,
 ) -> RuntimeDocument {
     let environment = runtime.environment();
-    let mut runtime_document = RuntimeDocument::new(doc, environment.clone());
-    environment.reattach_document(&mut runtime_document);
-    runtime_document
+    RuntimeDocument::new(doc, environment.clone())
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +59,6 @@ pub struct ReadmeApplication {
     current_document: Option<FetchedDocument>,
     current_js_runtime: Option<JsPageRuntime>,
     prepared_document: Option<HtmlDocument>,
-    pending_script_summary: Option<ScriptExecutionSummary>,
     pending_document_reset: bool,
     chrome_handles: Option<DocumentChromeHandles>,
     url_history: Vec<String>,
@@ -84,7 +81,6 @@ impl ReadmeApplication {
             current_document: None,
             current_js_runtime: None,
             prepared_document: None,
-            pending_script_summary: None,
             pending_document_reset: false,
             chrome_handles: None,
             url_history: Vec::new(),
@@ -128,15 +124,30 @@ impl ReadmeApplication {
         }
 
         let boxed_document: Box<dyn Document> =
-            if let Some(runtime) = self.current_js_runtime.as_ref() {
-                Box::new(runtime_document_with_environment(runtime, doc))
+            if let Some(runtime) = self.current_js_runtime.as_mut() {
+                let runtime_doc = runtime_document_with_environment(runtime, doc);
+                let mut boxed = Box::new(runtime_doc);
+                // Attach after boxing to ensure bridge pointer is valid at final heap location
+                runtime.attach_document(&mut boxed);
+                // Run blocking scripts now that document is attached
+                match runtime.run_blocking_scripts() {
+                    Ok(Some(summary)) => {
+                        self.log_script_summary(&base_url, &summary);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        error!(
+                            target = "quickjs",
+                            url = %base_url,
+                            error = %err,
+                            "failed to execute blocking scripts"
+                        );
+                    }
+                }
+                boxed
             } else {
                 Box::new(doc)
             };
-
-        if let Some(summary) = self.pending_script_summary.take() {
-            self.log_script_summary(&base_url, &summary);
-        }
 
         self.pending_document_reset = false;
         boxed_document
@@ -145,7 +156,6 @@ impl ReadmeApplication {
     fn set_document(&mut self, document: FetchedDocument) {
         self.current_js_runtime = None;
         self.prepared_document = None;
-        self.pending_script_summary = None;
         self.pending_document_reset = true;
         self.chrome_handles = None;
 
@@ -177,23 +187,10 @@ impl ReadmeApplication {
 
         let mut prepared_doc = self.build_document_with_chrome(&contents, &base_url);
 
-        if let Some(runtime) = self.current_js_runtime.as_mut() {
-            runtime.attach_document(&mut prepared_doc);
-            match runtime.run_blocking_scripts() {
-                Ok(Some(summary)) => {
-                    self.pending_script_summary = Some(summary);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    error!(
-                        target = "quickjs",
-                        url = %base_url,
-                        error = %err,
-                        "failed to execute blocking scripts"
-                    );
-                }
-            }
-        }
+        // Note: We don't attach the document here because it will be moved/boxed later.
+        // The attachment happens when creating the final RuntimeDocument to ensure
+        // the bridge pointer is valid at the document's final heap location.
+        // Scripts will be run after the document is properly attached and boxed.
 
         match DocumentChromeHandles::compute(&mut prepared_doc) {
             Ok(handles) => {
@@ -280,18 +277,33 @@ impl ReadmeApplication {
             }
 
             let boxed_document: Box<dyn Document> =
-                if let Some(runtime) = self.current_js_runtime.as_ref() {
-                    Box::new(runtime_document_with_environment(runtime, doc))
+                if let Some(runtime) = self.current_js_runtime.as_mut() {
+                    let runtime_doc = runtime_document_with_environment(runtime, doc);
+                    let mut boxed = Box::new(runtime_doc);
+                    // Attach after boxing to ensure bridge pointer is valid at final heap location
+                    runtime.attach_document(&mut boxed);
+                    // Run blocking scripts now that document is attached
+                    match runtime.run_blocking_scripts() {
+                        Ok(Some(summary)) => {
+                            self.log_script_summary(&base_url, &summary);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            error!(
+                                target = "quickjs",
+                                url = %base_url,
+                                error = %err,
+                                "failed to execute blocking scripts"
+                            );
+                        }
+                    }
+                    boxed
                 } else {
                     Box::new(doc)
                 };
 
             self.window_mut()
                 .replace_document(boxed_document, retain_scroll);
-
-            if let Some(summary) = self.pending_script_summary.take() {
-                self.log_script_summary(&base_url, &summary);
-            }
 
             self.pending_document_reset = false;
             return;
