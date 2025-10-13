@@ -11,8 +11,31 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nixos, hetzner]
     steps:
+      # Seed persistent WPT mirror to avoid re-cloning ~15min on every run.
+      # WPT is large (~3GB+) and slow over network; keeping a local mirror significantly
+      # speeds up submodule initialization. The mirror is stored in /var/lib/git-mirrors
+      # which persists across jobs on the self-hosted runner.
+      - name: Seed WPT mirror
+        run: |
+          MIRROR_DIR="/var/lib/git-mirrors/wpt.git"
+          WPT_URL="https://github.com/web-platform-tests/wpt.git"
+
+          if [ -d "$MIRROR_DIR/.git" ] || [ -f "$MIRROR_DIR/config" ]; then
+            echo "Mirror exists at $MIRROR_DIR, fetching updates..."
+            git -C "$MIRROR_DIR" fetch --prune origin
+          else
+            echo "Creating new mirror at $MIRROR_DIR..."
+            git clone --mirror "$WPT_URL" "$MIRROR_DIR"
+          fi
+
+          # Configure git to redirect WPT clones/fetches to use the local mirror
+          # This affects submodule init and any future git operations on WPT
+          git config --global url."file://$MIRROR_DIR".insteadOf "$WPT_URL"
+
+          echo "WPT mirror configured at $MIRROR_DIR"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
