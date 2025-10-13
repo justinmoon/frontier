@@ -130,6 +130,98 @@ async fn click_element(
     Ok(())
 }
 
+async fn send_keys(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    element_id: &str,
+    text: &str,
+) -> Result<()> {
+    client
+        .post(format!(
+            "{}/session/{}/element/{}/value",
+            base_url, session_id, element_id
+        ))
+        .json(&json!({"text": text}))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+async fn type_keys_to_element(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    element_id: &str,
+    text: &str,
+) -> Result<()> {
+    send_keys(client, base_url, session_id, element_id, text).await
+}
+
+async fn clear_element(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    element_id: &str,
+) -> Result<()> {
+    client
+        .post(format!(
+            "{}/session/{}/element/{}/clear",
+            base_url, session_id, element_id
+        ))
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+async fn element_attribute(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    element_id: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let response: serde_json::Value = client
+        .get(format!(
+            "{}/session/{}/element/{}/attribute",
+            base_url, session_id, element_id
+        ))
+        .query(&[("name", name)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
+        .context("parse element attribute response")?;
+    Ok(response["value"].as_str().map(|s| s.to_string()))
+}
+
+async fn element_value(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    element_id: &str,
+) -> Result<String> {
+    let response: serde_json::Value = client
+        .get(format!(
+            "{}/session/{}/element/{}/value",
+            base_url, session_id, element_id
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
+        .context("parse element value response")?;
+    response["value"]
+        .as_str()
+        .context("value missing")
+        .map(|s| s.to_string())
+}
+
 fn parse_elapsed_seconds(text: &str) -> Result<f32> {
     let numeric = text
         .strip_prefix("Elapsed: ")
@@ -219,6 +311,88 @@ async fn webdriver_timer_start_stop() -> Result<()> {
         (after_stop_seconds - stopped_seconds).abs() < 0.05,
         "timer should remain paused after stop (was {stopped_text}, later {after_stop_text})"
     );
+
+    handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webdriver_temperature_converter() -> Result<()> {
+    let (handle, base_url, client) = spawn_webdriver().await?;
+
+    let session_id = create_file_session(&client, &base_url, "temperature-converter.html").await?;
+    let celsius_id = find_element(&client, &base_url, &session_id, "#celsius-input").await?;
+    let fahrenheit_id = find_element(&client, &base_url, &session_id, "#fahrenheit-input").await?;
+    let summary_id = find_element(&client, &base_url, &session_id, "#conversion-summary").await?;
+    let status_id = find_element(&client, &base_url, &session_id, "#conversion-status").await?;
+
+    let placeholder =
+        element_attribute(&client, &base_url, &session_id, &celsius_id, "placeholder").await?;
+    assert_eq!(placeholder.as_deref(), Some("0"));
+
+    let initial_summary = element_text(&client, &base_url, &session_id, &summary_id).await?;
+    assert_eq!(initial_summary, "Waiting for input.");
+
+    let initial_status = element_text(&client, &base_url, &session_id, &status_id).await?;
+    assert_eq!(initial_status, "Enter a temperature to convert.");
+
+    click_element(&client, &base_url, &session_id, &celsius_id).await?;
+    type_keys_to_element(&client, &base_url, &session_id, &celsius_id, "100").await?;
+    pump_session(&client, &base_url, &session_id, 200).await?;
+
+    let typed_celsius = element_value(&client, &base_url, &session_id, &celsius_id).await?;
+    assert_eq!(typed_celsius, "100");
+
+    let fahrenheit_value = element_value(&client, &base_url, &session_id, &fahrenheit_id).await?;
+    assert_eq!(fahrenheit_value, "212.0");
+
+    let summary_text = element_text(&client, &base_url, &session_id, &summary_id).await?;
+    assert_eq!(summary_text, "Celsius 100 ↔ Fahrenheit 212.0");
+
+    let status_text = element_text(&client, &base_url, &session_id, &status_id).await?;
+    assert_eq!(status_text, "Conversion ready.");
+
+    clear_element(&client, &base_url, &session_id, &celsius_id).await?;
+    pump_session(&client, &base_url, &session_id, 100).await?;
+
+    let cleared_celsius = element_value(&client, &base_url, &session_id, &celsius_id).await?;
+    assert_eq!(cleared_celsius, "");
+    let cleared_fahrenheit = element_value(&client, &base_url, &session_id, &fahrenheit_id).await?;
+    assert_eq!(cleared_fahrenheit, "");
+
+    let summary_after_clear = element_text(&client, &base_url, &session_id, &summary_id).await?;
+    assert_eq!(summary_after_clear, "Waiting for input.");
+    let status_after_clear = element_text(&client, &base_url, &session_id, &status_id).await?;
+    assert_eq!(status_after_clear, "Enter a temperature to convert.");
+
+    type_keys_to_element(&client, &base_url, &session_id, &celsius_id, "abc").await?;
+    pump_session(&client, &base_url, &session_id, 100).await?;
+    let status_invalid = element_text(&client, &base_url, &session_id, &status_id).await?;
+    assert_eq!(
+        status_invalid,
+        "Enter a valid number to see the conversion."
+    );
+    let summary_invalid = element_text(&client, &base_url, &session_id, &summary_id).await?;
+    assert_eq!(summary_invalid, "Input is not a number.");
+
+    clear_element(&client, &base_url, &session_id, &celsius_id).await?;
+    pump_session(&client, &base_url, &session_id, 100).await?;
+
+    click_element(&client, &base_url, &session_id, &fahrenheit_id).await?;
+    type_keys_to_element(&client, &base_url, &session_id, &fahrenheit_id, "32").await?;
+    pump_session(&client, &base_url, &session_id, 200).await?;
+
+    let typed_fahrenheit = element_value(&client, &base_url, &session_id, &fahrenheit_id).await?;
+    assert_eq!(typed_fahrenheit, "32");
+
+    let celsius_converted = element_value(&client, &base_url, &session_id, &celsius_id).await?;
+    assert_eq!(celsius_converted, "0.0");
+
+    let summary_after_fahrenheit =
+        element_text(&client, &base_url, &session_id, &summary_id).await?;
+    assert_eq!(summary_after_fahrenheit, "Celsius 0.0 ↔ Fahrenheit 32");
+    let status_after_fahrenheit = element_text(&client, &base_url, &session_id, &status_id).await?;
+    assert_eq!(status_after_fahrenheit, "Conversion ready.");
 
     handle.shutdown().await;
     Ok(())

@@ -1819,7 +1819,7 @@ const DOM_BOOTSTRAP: &str = r#"
         let proto;
         switch (type) {
             case 1:
-                proto = ElementProto;
+                proto = elementPrototypeFor(handle);
                 break;
             case 3:
                 proto = TextProto;
@@ -1838,6 +1838,20 @@ const DOM_BOOTSTRAP: &str = r#"
         node[HANDLE] = String(handle);
         associateEventTargetHandle(node, handle);
         return node;
+    }
+
+    function elementPrototypeFor(handle) {
+        const name = global.__frontier_dom_node_name(handle);
+        if (typeof name !== 'string') {
+            return ElementProto;
+        }
+        switch (name.toUpperCase()) {
+            case 'INPUT':
+            case 'TEXTAREA':
+                return InputLikeProto;
+            default:
+                return ElementProto;
+        }
     }
 
     const NodeProto = {
@@ -2099,6 +2113,16 @@ const DOM_BOOTSTRAP: &str = r#"
             this.insertBefore(node, reference);
         });
     };
+
+    const InputLikeProto = Object.create(ElementProto);
+    Object.defineProperty(InputLikeProto, 'value', {
+        get() {
+            return this.getAttribute('value') ?? '';
+        },
+        set(value) {
+            this.setAttribute('value', value == null ? '' : String(value));
+        },
+    });
     ElementProto.matches = function () {
         return false;
     };

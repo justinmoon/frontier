@@ -47,3 +47,53 @@ fn headless_timer_start_stop() {
         assert_eq!(stopped, after, "timer should freeze after stop");
     });
 }
+
+#[test]
+fn headless_temperature_converter() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let mut session = HeadlessSessionBuilder::new()
+            .with_base_dir(asset_root())
+            .open_file("temperature-converter.html")
+            .await
+            .expect("open temperature converter");
+
+        assert_eq!(
+            session.inner_text("#conversion-summary").unwrap(),
+            "Waiting for input."
+        );
+        assert_eq!(
+            session.inner_text("#conversion-status").unwrap(),
+            "Enter a temperature to convert."
+        );
+
+        session.type_text("#celsius-input", "100").await.unwrap();
+        session.pump_for(Duration::from_millis(100)).await;
+        assert_eq!(
+            session.inner_text("#conversion-summary").unwrap(),
+            "Celsius 100 ↔ Fahrenheit 212.0"
+        );
+        assert_eq!(
+            session.inner_text("#conversion-status").unwrap(),
+            "Conversion ready."
+        );
+        assert_eq!(session.element_value("#fahrenheit-input").unwrap(), "212.0");
+
+        session.clear("#celsius-input").await.unwrap();
+        session.pump_for(Duration::from_millis(50)).await;
+        assert_eq!(session.element_value("#celsius-input").unwrap(), "");
+        assert_eq!(session.element_value("#fahrenheit-input").unwrap(), "");
+        assert_eq!(
+            session.inner_text("#conversion-summary").unwrap(),
+            "Waiting for input."
+        );
+
+        session.type_text("#fahrenheit-input", "32").await.unwrap();
+        session.pump_for(Duration::from_millis(100)).await;
+        assert_eq!(
+            session.inner_text("#conversion-summary").unwrap(),
+            "Celsius 0.0 ↔ Fahrenheit 32"
+        );
+        assert_eq!(session.element_value("#celsius-input").unwrap(), "0.0");
+    });
+}
