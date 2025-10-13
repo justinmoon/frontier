@@ -197,13 +197,32 @@ async fn webdriver_timer_start_stop() -> Result<()> {
     assert_eq!(initial_text, "Elapsed: 0.0s");
 
     click_element(&client, &base_url, &session_id, &start_button_id).await?;
-    pump_session(&client, &base_url, &session_id, 500).await?;
+
+    // Pump for 1 second (1000ms) to let timer advance
+    pump_session(&client, &base_url, &session_id, 1000).await?;
 
     let running_text = element_text(&client, &base_url, &session_id, &timer_value_id).await?;
     let running_seconds = parse_elapsed_seconds(&running_text)?;
+
+    println!(
+        "After clicking start and waiting 1 second: {}",
+        running_text
+    );
+    println!("Parsed seconds: {}", running_seconds);
+
     assert!(
         running_seconds > 0.0,
-        "timer should advance after being started"
+        "timer should advance after being started, but got: {} ({}s)",
+        running_text,
+        running_seconds
+    );
+
+    // Timer should be close to 1 second (allowing some margin)
+    assert!(
+        (0.8..=1.2).contains(&running_seconds),
+        "timer should be around 1.0s after 1 second, but got: {} ({}s)",
+        running_text,
+        running_seconds
     );
 
     click_element(&client, &base_url, &session_id, &stop_button_id).await?;

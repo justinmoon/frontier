@@ -206,10 +206,6 @@ impl JsDomEnvironment {
     pub fn register_waker(&self, waker: &Waker) {
         self.timers.register_waker(waker);
     }
-
-    pub fn has_pending_timers(&self) -> bool {
-        self.timers.has_active_timers()
-    }
 }
 
 fn install_dom_bindings(
@@ -830,10 +826,6 @@ impl TimerManager {
 
     fn wake(&self) {
         self.waker.wake();
-    }
-
-    fn has_active_timers(&self) -> bool {
-        !self.timers.borrow().is_empty()
     }
 
     fn register_timer(&self, delay_ms: f64, kind: TimerKind, repeating: bool) -> u32 {
