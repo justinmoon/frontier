@@ -15,7 +15,7 @@ Keep things simple. Try to keep directory structure reasonably flat.
 
 Never stub things out for a real implementation later unless you are explicitely told to do so. Your job is to make a real implementation now.
 
-**NEVER USE MOCKS.** Mocks hide bugs by not exercising real code paths. If absolutely needed, we can have variants of tests that run faster by mocking or just doing unittests -- but our main ci test suite that runs on every PR _must_ run all important tests against real infrastructure where possible to ensure our app works in the wild.
+**NO MOCKS. NO SMOKE TESTS.** Mocks hide bugs by not exercising real code paths. If absolutely needed, we can have variants of tests that run faster by mocking or just doing unittests -- but our main ci test suite that runs on every PR _must_ run all important tests against real infrastructure where possible to ensure our app works in the wild.
 
 When you're developing a feature that effects the ui, try to create a UI test using blitz's accessibility feautures. This can help give you a feedback loop. Without a feedback loop you struggle to deliver working features because you can't interact with your work.
 
