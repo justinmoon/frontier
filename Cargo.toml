@@ -17,14 +17,14 @@ log_phase_times = ["blitz-dom/log_phase_times"]
 incremental = ["blitz-dom/incremental"]
 
 [dependencies]
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c" }
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["default", "parallel-construct"] }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["default"] }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["cookies"] }
-blitz-shell = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["tracing", "default"] }
-anyrender_vello = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", optional = true }
-anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/blitz.git", rev = "e0268796a2a416de62c4819ca4bea4dffbfc499c", features = ["multithreading"], optional = true }
+blitz-traits = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier" }
+blitz-dom = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", features = ["default", "parallel-construct"] }
+blitz-html = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier" }
+blitz-paint = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", features = ["default"] }
+blitz-net = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", features = ["cookies"] }
+blitz-shell = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", features = ["tracing", "default"] }
+anyrender_vello = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", optional = true }
+anyrender_vello_cpu = { git = "https://github.com/justinmoon/blitz.git", branch = "frontier", features = ["multithreading"], optional = true }
 
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "signal", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
