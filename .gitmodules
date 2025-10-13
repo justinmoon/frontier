@@ -3,3 +3,6 @@
 	url = https://github.com/web-platform-tests/wpt.git
 	branch = master
 	shallow = true
+# Reuse the cached clone across worktrees instead of recloning WPT each time.
+	alternateLocation = superproject
+	alternateErrorStrategy = die
