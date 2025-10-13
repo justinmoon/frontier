@@ -34,6 +34,9 @@ jobs:
           # This affects submodule init and any future git operations on WPT
           git config --global url."file://$MIRROR_DIR".insteadOf "$WPT_URL"
 
+          # Allow file:// protocol for local mirror access (required for git 2.38+)
+          git config --global protocol.file.allow always
+
           echo "WPT mirror configured at $MIRROR_DIR"
 
       - name: Checkout repository
