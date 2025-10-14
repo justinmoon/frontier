@@ -36,6 +36,34 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
             z-index: 1000;
         }}
 
+        .nav-button {{
+            width: 32px;
+            height: 32px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: white;
+            color: #24292f;
+            font-size: 18px;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }}
+
+        .nav-button:hover {{
+            background: #eaeef2;
+        }}
+
+        .nav-button:active {{
+            background: #d0d7de;
+        }}
+
+        .nav-button:disabled {{
+            opacity: 0.4;
+            cursor: not-allowed;
+        }}
+
         #url-form {{
             width: 100%;
             display: flex;
@@ -180,6 +208,8 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
 </head>
 <body>
     <nav id="url-bar-container" role="navigation" aria-label="Browser navigation">
+        <button id="back-button" class="nav-button" title="Back" aria-label="Go back" type="button">&larr;</button>
+        <button id="forward-button" class="nav-button" title="Forward" aria-label="Go forward" type="button">&rarr;</button>
         <form id="url-form" style="display: flex; flex: 1; gap: 8px;" role="search">
             <label for="url-input" class="sr-only" style="position: absolute; left: -10000px;">
                 Enter website URL
@@ -208,6 +238,42 @@ pub fn wrap_with_url_bar(content: &str, display_url: &str, overlay_html: Option<
     <div id="overlay-host">
         {overlay}
     </div>
+    <script>
+        (function() {{
+            const form = document.getElementById('url-form');
+            const input = document.getElementById('url-input');
+            const goButton = document.getElementById('go-button');
+            const backButton = document.getElementById('back-button');
+            const forwardButton = document.getElementById('forward-button');
+
+            const navigate = (target) => {{
+                if (!target) {{
+                    return;
+                }}
+                window.location.href = target;
+            }};
+
+            form?.addEventListener('submit', (event) => {{
+                event.preventDefault();
+                navigate(input?.value || '');
+            }});
+
+            goButton?.addEventListener('click', (event) => {{
+                event.preventDefault();
+                navigate(input?.value || '');
+            }});
+
+            backButton?.addEventListener('click', (event) => {{
+                event.preventDefault();
+                navigate('frontier://back');
+            }});
+
+            forwardButton?.addEventListener('click', (event) => {{
+                event.preventDefault();
+                navigate('frontier://forward');
+            }});
+        }})();
+    </script>
 </body>
 </html>"#,
         display_url = display_url,
