@@ -1,28 +1,30 @@
-We want a Playwright-style, true end-to-end framework where tests only drive the UI exactly as a human would, so we can shrink manual QA while giving coding agents real-time visibility into the running app.
+We now have a runnable automation host that launches the full Frontier chrome and exposes a thin HTTP/WebDriver façade. The remaining work focuses on turning that foundation into a production-grade harness capable of comprehensive end-to-end coverage.
 
-**Target Experience**
-- Tests speak WebDriver-only APIs that model user intent (pointer, keyboard, navigation) and never reach inside our runtime guts.
-- The harness captures rich artifacts (DOM snapshots, relay traffic, console output) so agents can see what the browser saw when failures happen.
-- CI runs the full suite against the same nostr-integrated browser we ship, eliminating gaps between automation and production.
+### Remaining Work
 
-**Immediate Actions**
-- Seal `HeadlessSession` and other automation internals behind the WebDriver server; publish a narrow `frontier_webdriver` client so tests cannot import low-level helpers even inside the repo.
-- Implement user-realistic actions: pointer move/down/up sequences with hit testing, keyboard typing, focus management, scrolling, and form field reads—wired to the same event queue QuickJS uses.
-- Flesh out the WebDriver surface to match spec (capabilities negotiation, element properties, pointer actions) and document which commands are allowed; deny merges that add custom RPCs or script execution.
-- Replace raw CSS selectors with accessibility-first queries (role/name from Blitz tooling) to encourage resilient, user-visible interrogation of the UI.
-- Keep the `pump` helper private; expose higher-level waits (`wait_for_text`, `wait_for_network_idle`) that poll via user-surface APIs rather than time travel.
+1. **Client API & Guardrails**
+   - Publish a sanctioned Rust client (and prepare for other languages) that wraps the HTTP endpoints; make it the only path tests can use.
+   - Add linting/CI checks to block direct imports of `src/automation` internals or QuickJS hooks from tests.
 
-**Guardrails for Authors**
-- Add lint rules that fail when integration tests import modules under `src/automation` or call QuickJS internals.
-- Ship a CLippy-style check (or cargo plugin) that verifies test files only use the sanctioned client helpers.
-- Provide snippets/examples in `notes/testing` that demonstrate the happy path, so contributors have a clear template.
+2. **Input Fidelity**
+   - Expand the host with full pointer sequences (move/down/up, hover, drag, wheel) and richer keyboard shortcuts.
+   - Provide focus management helpers, scrolling, and accessibility-first queries (role/name) for resilient selectors.
 
-**Visibility & Debuggability**
-- Record every significant user action and resulting DOM mutation to an artifact log so agents can reason about flaky behavior without rerunning locally.
-- Capture periodic screenshots plus relay/network traces, wiring them into CI artifacts.
-- Surface QuickJS exceptions prominently in the test output with actionable context (file, line, offending script) instead of burying them in logs.
+3. **Observation & Debugging**
+   - Capture DOM snapshots, console output, and relay/network traces around each command; emit artifacts in CI.
+   - Offer optional screenshots/video and surface QuickJS exceptions prominently in test output.
 
-**Longer-Term Bets**
-- Run a nightly suite against multiple relay topologies and OS/browser variants, reusing the same user-action API to catch federation regressions early.
-- Integrate hardware-accelerated builds once available so the same tests can optionally target the GPU-backed engine.
-- Explore property-based user flows (randomized but user-valid interactions) once the deterministic action API is battle-tested.
+4. **Test Suite Migration & Coverage**
+   - Port all existing integration/e2e tests to the automation host and remove legacy headless helpers.
+   - Identify missing coverage across chrome controls, rendered document behaviors, navigation/history, Nostril/relay flows, etc., and add end-to-end tests for each gap.
+
+5. **Wait & Synchronisation Primitives**
+   - Replace raw `pump` usage with higher-level waits (`wait_for_text`, `wait_for_network_idle`, etc.) driven by observable UI state.
+
+6. **CI & Platform Experience**
+   - Ensure the harness runs in CI across supported platforms and, over time, exercise multiple relay/network topologies.
+   - Plan for GPU-accelerated builds so the same tests can validate both CPU and GPU renderers.
+
+7. **Future Enhancements**
+   - Explore property-based/randomized user flows once deterministic coverage is stable.
+   - Schedule nightly runs with varied relay sets to catch federation regressions early.
