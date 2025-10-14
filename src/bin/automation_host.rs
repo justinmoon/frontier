@@ -1,3 +1,6 @@
+#![allow(clippy::disallowed_types)]
+
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,7 +14,8 @@ use axum::{
 };
 use frontier::automation::full_app::{AutomationState, AutomationTask};
 use frontier::automation::{
-    AutomationCommand, AutomationEvent, AutomationResponse, AutomationResult, AutomationStateHandle,
+    AutomationCommand, AutomationEvent, AutomationResponse, AutomationResult,
+    AutomationStateHandle, ElementSelector, KeyboardAction, PointerAction,
 };
 use frontier::{create_default_event_loop, wrap_with_url_bar, ReadmeApplication};
 use serde::{Deserialize, Serialize};
@@ -27,12 +31,47 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use frontier::navigation::{execute_fetch, prepare_navigation, FetchedDocument, NavigationPlan};
 use frontier::WindowRenderer;
 
+const SESSION_ID: &str = "frontier";
+
 #[derive(Clone)]
 struct HostState {
     automation: AutomationStateHandle,
     proxy: EventLoopProxy<BlitzShellEvent>,
     asset_root: PathBuf,
     session_active: Arc<Mutex<bool>>,
+    artifact_root: PathBuf,
+    command_counter: Arc<Mutex<u64>>,
+    session_artifacts: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl HostState {
+    fn prepare_session_artifacts(&self, session_id: &str) -> Result<(), StatusCode> {
+        let dir = self.artifact_root.join(session_id);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+        std::fs::create_dir_all(&dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        *self.command_counter.lock().unwrap() = 0;
+        *self.session_artifacts.lock().unwrap() = Some(dir);
+        Ok(())
+    }
+
+    fn next_artifact_path(&self, label: &str) -> Option<PathBuf> {
+        let mut counter = self.command_counter.lock().unwrap();
+        let session_dir = {
+            let guard = self.session_artifacts.lock().unwrap();
+            guard.clone()
+        }?;
+        let index = *counter;
+        *counter += 1;
+        let sanitized = label
+            .chars()
+            .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
+            .collect::<String>();
+        Some(session_dir.join(format!("{index:04}_{}", sanitized)))
+    }
 }
 
 #[derive(Deserialize)]
@@ -47,13 +86,13 @@ struct CreateSessionResponse {
 }
 
 #[derive(Deserialize)]
-struct ClickPayload {
-    selector: String,
+struct SelectorBody {
+    selector: ElementSelector,
 }
 
 #[derive(Deserialize)]
 struct TypePayload {
-    selector: String,
+    selector: ElementSelector,
     text: String,
 }
 
@@ -70,12 +109,55 @@ struct NavigatePayload {
 
 #[derive(Deserialize)]
 struct TextQuery {
-    selector: String,
+    kind: Option<String>,
+    selector: Option<String>,
+    role: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Serialize)]
 struct TextResponse {
     value: String,
+}
+
+#[derive(Serialize)]
+struct ExistsResponse {
+    exists: bool,
+}
+
+#[derive(Deserialize)]
+struct PointerPayload {
+    actions: Vec<PointerAction>,
+}
+
+#[derive(Deserialize)]
+struct KeyboardPayload {
+    actions: Vec<KeyboardAction>,
+}
+
+impl TextQuery {
+    fn into_selector(self) -> Result<ElementSelector, StatusCode> {
+        match self.kind.as_deref() {
+            Some("css") => self
+                .selector
+                .map(ElementSelector::css)
+                .ok_or(StatusCode::BAD_REQUEST),
+            Some("role") => self
+                .role
+                .map(|role| ElementSelector::role(role, self.name))
+                .ok_or(StatusCode::BAD_REQUEST),
+            Some(_) => Err(StatusCode::BAD_REQUEST),
+            None => {
+                if let Some(selector) = self.selector {
+                    Ok(ElementSelector::css(selector))
+                } else if let Some(role) = self.role {
+                    Ok(ElementSelector::role(role, self.name))
+                } else {
+                    Err(StatusCode::BAD_REQUEST)
+                }
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -93,11 +175,15 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
 
     let automation_state = Arc::new(AutomationState::new());
+    let _ = std::fs::create_dir_all(&config.artifact_root);
     let host_state = HostState {
         automation: Arc::clone(&automation_state),
         proxy: proxy.clone(),
         asset_root: config.asset_root.clone(),
         session_active: Arc::new(Mutex::new(false)),
+        artifact_root: config.artifact_root.clone(),
+        command_counter: Arc::new(Mutex::new(0)),
+        session_artifacts: Arc::new(Mutex::new(None)),
     };
 
     // Spin up HTTP server after binding listener
@@ -108,7 +194,7 @@ fn main() -> Result<()> {
         server_ready_tx,
     ));
     let bound_addr = runtime
-        .block_on(async { server_ready_rx.await })
+        .block_on(server_ready_rx)
         .context("automation server failed to bind")??;
     println!("AUTOMATION_HOST_READY {bound_addr}");
 
@@ -183,6 +269,7 @@ struct HostConfig {
     bind_addr: SocketAddr,
     initial_target: String,
     asset_root: PathBuf,
+    artifact_root: PathBuf,
 }
 
 impl HostConfig {
@@ -201,6 +288,13 @@ impl HostConfig {
             asset_root: std::env::var("AUTOMATION_ASSET_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")),
+            artifact_root: std::env::var("AUTOMATION_ARTIFACT_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("target")
+                        .join("automation-artifacts")
+                }),
         })
     }
 }
@@ -238,7 +332,12 @@ async fn start_http_server(
         .route("/session/:id/type", post(type_text))
         .route("/session/:id/pump", post(pump_session))
         .route("/session/:id/text", get(get_text))
+        .route("/session/:id/exists", get(element_exists))
         .route("/session/:id/navigate", post(navigate_to))
+        .route("/session/:id/pointer", post(pointer_sequence))
+        .route("/session/:id/keyboard", post(keyboard_sequence))
+        .route("/session/:id/focus", post(focus_element))
+        .route("/session/:id/scroll", post(scroll_element))
         .with_state(host_state);
 
     if let Err(err) = axum::serve(listener, app).await {
@@ -264,15 +363,19 @@ async fn create_session(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
+    state
+        .prepare_session_artifacts(SESSION_ID)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     Ok(Json(CreateSessionResponse {
-        session_id: "frontier".into(),
+        session_id: SESSION_ID.into(),
     }))
 }
 
 async fn click_element(
     State(state): State<HostState>,
     AxumPath(_id): AxumPath<String>,
-    Json(payload): Json<ClickPayload>,
+    Json(payload): Json<SelectorBody>,
 ) -> Result<StatusCode, StatusCode> {
     send_command(
         &state,
@@ -331,27 +434,151 @@ async fn navigate_to(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn pointer_sequence(
+    State(state): State<HostState>,
+    AxumPath(_id): AxumPath<String>,
+    Json(payload): Json<PointerPayload>,
+) -> Result<StatusCode, StatusCode> {
+    send_command(
+        &state,
+        AutomationCommand::PointerSequence {
+            actions: payload.actions,
+        },
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn keyboard_sequence(
+    State(state): State<HostState>,
+    AxumPath(_id): AxumPath<String>,
+    Json(payload): Json<KeyboardPayload>,
+) -> Result<StatusCode, StatusCode> {
+    send_command(
+        &state,
+        AutomationCommand::KeyboardSequence {
+            actions: payload.actions,
+        },
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn focus_element(
+    State(state): State<HostState>,
+    AxumPath(_id): AxumPath<String>,
+    Json(payload): Json<SelectorBody>,
+) -> Result<StatusCode, StatusCode> {
+    send_command(
+        &state,
+        AutomationCommand::Focus {
+            selector: payload.selector,
+        },
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn scroll_element(
+    State(state): State<HostState>,
+    AxumPath(_id): AxumPath<String>,
+    Json(payload): Json<SelectorBody>,
+) -> Result<StatusCode, StatusCode> {
+    send_command(
+        &state,
+        AutomationCommand::ScrollIntoView {
+            selector: payload.selector,
+        },
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn command_label(command: &AutomationCommand) -> &'static str {
+    match command {
+        AutomationCommand::Click { .. } => "click",
+        AutomationCommand::TypeText { .. } => "type",
+        AutomationCommand::GetText { .. } => "get_text",
+        AutomationCommand::ElementExists { .. } => "exists",
+        AutomationCommand::Pump { .. } => "pump",
+        AutomationCommand::Navigate { .. } => "navigate",
+        AutomationCommand::PointerSequence { .. } => "pointer",
+        AutomationCommand::KeyboardSequence { .. } => "keyboard",
+        AutomationCommand::Focus { .. } => "focus",
+        AutomationCommand::ScrollIntoView { .. } => "scroll",
+        AutomationCommand::Shutdown => "shutdown",
+    }
+}
+
+fn persist_artifacts(
+    path: &Path,
+    command: &AutomationCommand,
+    result: &AutomationResult,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path)?;
+    std::fs::write(path.join("command.txt"), format!("{command:#?}"))?;
+
+    match result {
+        Ok(reply) => {
+            std::fs::write(
+                path.join("reply.json"),
+                serde_json::to_string_pretty(reply)?,
+            )?;
+            if let Some(artifacts) = &reply.artifacts {
+                if let Some(dom) = &artifacts.dom_html {
+                    std::fs::write(path.join("dom.html"), dom)?;
+                }
+            }
+        }
+        Err(err) => {
+            std::fs::write(path.join("error.txt"), format!("{err:#}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn get_text(
     State(state): State<HostState>,
     AxumPath(_id): AxumPath<String>,
     Query(query): Query<TextQuery>,
 ) -> Result<Json<TextResponse>, StatusCode> {
-    let AutomationResponse::Text(value) = send_command(
-        &state,
-        AutomationCommand::GetText {
-            selector: query.selector,
-        },
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    else {
+    let selector = query.into_selector()?;
+    let reply = send_command(&state, AutomationCommand::GetText { selector })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let AutomationResponse::Text(value) = reply.response else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
     Ok(Json(TextResponse { value }))
 }
 
+async fn element_exists(
+    State(state): State<HostState>,
+    AxumPath(_id): AxumPath<String>,
+    Query(query): Query<TextQuery>,
+) -> Result<Json<ExistsResponse>, StatusCode> {
+    let selector = query.into_selector()?;
+    let reply = send_command(&state, AutomationCommand::ElementExists { selector })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let AutomationResponse::Bool(exists) = reply.response else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    Ok(Json(ExistsResponse { exists }))
+}
+
 async fn send_command(state: &HostState, command: AutomationCommand) -> AutomationResult {
     eprintln!("AUTOMATION_CMD queue {:?}", command);
+    let label = command_label(&command);
+    let artifact_path = state.next_artifact_path(label);
+
     let (tx, rx) = oneshot::channel();
     state
         .automation
@@ -360,9 +587,22 @@ async fn send_command(state: &HostState, command: AutomationCommand) -> Automati
         .proxy
         .send_event(BlitzShellEvent::Embedder(Arc::new(AutomationEvent)))
         .map_err(|_| anyhow!("event loop closed"))?;
+
     let result = rx
         .await
         .map_err(|_| anyhow!("automation response dropped"))?;
+
+    if let Some(path) = artifact_path {
+        if let Err(err) = persist_artifacts(&path, &command, &result) {
+            tracing::warn!(
+                target = "automation_host",
+                error = %err,
+                artifact = %path.display(),
+                "failed to persist automation artifacts"
+            );
+        }
+    }
+
     eprintln!("AUTOMATION_CMD done {:?} -> {:?}", command, result);
     result
 }
