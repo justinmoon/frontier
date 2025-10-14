@@ -1,3 +1,5 @@
+mod automation;
+#[allow(dead_code)]
 mod chrome;
 mod input;
 mod js;

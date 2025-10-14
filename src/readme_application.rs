@@ -1,5 +1,10 @@
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
+use crate::automation::{
+    AutomationCommand, AutomationEvent, AutomationResponse, AutomationResult, AutomationStateHandle,
+};
 use crate::chrome::wrap_with_url_bar;
 use crate::js::processor::ScriptExecutionSummary;
 use crate::js::runtime_document::RuntimeDocument;
@@ -8,7 +13,7 @@ use crate::navigation::{
     execute_fetch, prepare_navigation, FetchRequest, FetchedDocument, NavigationPlan,
 };
 use crate::WindowRenderer;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use blitz_dom::net::Resource;
 use blitz_dom::{local_name, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
@@ -16,10 +21,14 @@ use blitz_net::Provider;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html_escape::encode_text;
+use keyboard_types::Modifiers;
 use tokio::runtime::Handle;
 use tracing::{error, info};
 use winit::application::ApplicationHandler;
-use winit::event::{Modifiers, StartCause, WindowEvent};
+use winit::dpi::LogicalPosition;
+use winit::event::{
+    DeviceId, ElementState, Ime, Modifiers as WinitModifiers, MouseButton, StartCause, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Theme, WindowId};
@@ -49,19 +58,25 @@ pub enum NavigationMessage {
     },
 }
 
+struct AutomationBindings {
+    state: AutomationStateHandle,
+}
+
 pub struct ReadmeApplication {
     inner: BlitzApplication<WindowRenderer>,
     handle: Handle,
     net_provider: Arc<Provider<Resource>>,
     navigation_provider: Arc<dyn NavigationProvider>,
-    keyboard_modifiers: Modifiers,
+    keyboard_modifiers: WinitModifiers,
     current_input: String,
     current_document: Option<FetchedDocument>,
     current_js_runtime: Option<JsPageRuntime>,
     prepared_document: Option<HtmlDocument>,
     pending_document_reset: bool,
     chrome_handles: Option<DocumentChromeHandles>,
-    url_history: Vec<String>,
+    back_history: Vec<String>,
+    forward_history: Vec<String>,
+    automation: Option<AutomationBindings>,
 }
 
 impl ReadmeApplication {
@@ -83,8 +98,15 @@ impl ReadmeApplication {
             prepared_document: None,
             pending_document_reset: false,
             chrome_handles: None,
-            url_history: Vec::new(),
+            back_history: Vec::new(),
+            forward_history: Vec::new(),
+            automation: None,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn attach_automation(&mut self, state: AutomationStateHandle) {
+        self.automation = Some(AutomationBindings { state });
     }
 
     pub fn add_window(&mut self, window_config: WindowConfig<WindowRenderer>) {
@@ -384,6 +406,17 @@ impl ReadmeApplication {
     fn navigate(&mut self, options: NavigationOptions) {
         let url = options.url.clone();
         let url_str = url.to_string();
+
+        if url_str == "frontier://back" {
+            self.go_back();
+            return;
+        }
+
+        if url_str == "frontier://forward" {
+            self.go_forward();
+            return;
+        }
+
         let target = if url_str.contains("?url=") {
             if let Some(query) = url.query() {
                 ::url::form_urlencoded::parse(query.as_bytes())
@@ -399,10 +432,235 @@ impl ReadmeApplication {
 
         let previous = self.current_input.clone();
         if previous != target {
-            self.url_history.push(previous);
+            self.back_history.push(previous);
+            self.forward_history.clear();
         }
         self.current_input = target.clone();
         self.spawn_navigation(target, false);
+    }
+
+    fn go_back(&mut self) {
+        if let Some(target) = self.back_history.pop() {
+            let current = self.current_input.clone();
+            self.forward_history.push(current);
+            self.current_input = target.clone();
+            self.spawn_navigation(target, false);
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if let Some(target) = self.forward_history.pop() {
+            let current = self.current_input.clone();
+            self.back_history.push(current);
+            self.current_input = target.clone();
+            self.spawn_navigation(target, false);
+        }
+    }
+
+    fn process_automation_commands(&mut self, event_loop: &ActiveEventLoop) {
+        let state: AutomationStateHandle = match self.automation.as_ref() {
+            Some(bindings) => Arc::clone(&bindings.state),
+            None => return,
+        };
+
+        loop {
+            let task = state.pop();
+            let Some(task) = task else { break };
+            let (command, responder) = task.into_parts();
+            let result = self.execute_automation_command(event_loop, command);
+            let _ = responder.send(result);
+        }
+    }
+
+    fn execute_automation_command(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        command: AutomationCommand,
+    ) -> AutomationResult {
+        match command {
+            AutomationCommand::Click { selector } => {
+                let (window_id, x, y) = self.automation_pointer_for_selector(&selector)?;
+                self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
+                self.automation_dispatch_mouse_button(event_loop, window_id, ElementState::Pressed);
+                self.automation_dispatch_mouse_button(
+                    event_loop,
+                    window_id,
+                    ElementState::Released,
+                );
+                Ok(AutomationResponse::None)
+            }
+            AutomationCommand::TypeText { selector, text } => {
+                let (window_id, x, y) = self.automation_pointer_for_selector(&selector)?;
+                self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
+                self.automation_dispatch_mouse_button(event_loop, window_id, ElementState::Pressed);
+                self.automation_dispatch_mouse_button(
+                    event_loop,
+                    window_id,
+                    ElementState::Released,
+                );
+
+                self.current_input = text.clone();
+                for ch in text.chars() {
+                    let mut buffer = [0u8; 4];
+                    let committed = ch.encode_utf8(&mut buffer).to_string();
+                    self.inner.window_event(
+                        event_loop,
+                        window_id,
+                        WindowEvent::Ime(Ime::Commit(committed)),
+                    );
+                }
+                Ok(AutomationResponse::None)
+            }
+            AutomationCommand::GetText { selector } => {
+                let text = self.automation_element_text(&selector)?;
+                Ok(AutomationResponse::Text(text))
+            }
+            AutomationCommand::Pump { duration_ms } => {
+                self.automation_pump_for(Duration::from_millis(duration_ms));
+                Ok(AutomationResponse::None)
+            }
+            AutomationCommand::Navigate { target } => {
+                self.spawn_navigation(target, false);
+                Ok(AutomationResponse::None)
+            }
+            AutomationCommand::Shutdown => {
+                event_loop.exit();
+                Ok(AutomationResponse::None)
+            }
+        }
+    }
+
+    fn automation_first_window_id(&self) -> Option<WindowId> {
+        self.inner.windows.keys().next().copied()
+    }
+
+    fn automation_node_for_selector(
+        &mut self,
+        selector: &str,
+    ) -> anyhow::Result<(WindowId, usize)> {
+        let window_id = self
+            .automation_first_window_id()
+            .ok_or_else(|| anyhow!("automation window not ready"))?;
+        let node_id = {
+            let view = self
+                .inner
+                .windows
+                .get_mut(&window_id)
+                .ok_or_else(|| anyhow!("automation window missing"))?;
+            Self::lookup_node(view.doc.as_mut(), selector)?
+        };
+        Ok((window_id, node_id))
+    }
+
+    fn automation_pointer_for_selector(
+        &mut self,
+        selector: &str,
+    ) -> anyhow::Result<(WindowId, f64, f64)> {
+        let (window_id, node_id) = self.automation_node_for_selector(selector)?;
+        let (x, y) = {
+            let view = self
+                .inner
+                .windows
+                .get_mut(&window_id)
+                .ok_or_else(|| anyhow!("automation window missing"))?;
+            let node = view
+                .doc
+                .get_node(node_id)
+                .ok_or_else(|| anyhow!("automation node disappeared"))?;
+            let synthetic = node.synthetic_click_event_data(Modifiers::default());
+            (synthetic.x as f64, synthetic.y as f64)
+        };
+        Ok((window_id, x, y))
+    }
+
+    fn automation_element_text(&mut self, selector: &str) -> anyhow::Result<String> {
+        let (window_id, node_id) = self.automation_node_for_selector(selector)?;
+        let view = self
+            .inner
+            .windows
+            .get_mut(&window_id)
+            .ok_or_else(|| anyhow!("automation window missing"))?;
+        let text = view
+            .doc
+            .get_node(node_id)
+            .map(|node| node.text_content())
+            .unwrap_or_default();
+        Ok(text)
+    }
+
+    fn automation_dispatch_cursor_move(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        x: f64,
+        y: f64,
+    ) {
+        let logical = LogicalPosition::new(x, y);
+        let physical = {
+            let scale = self
+                .inner
+                .windows
+                .get(&window_id)
+                .map(|view| view.window.scale_factor())
+                .unwrap_or(1.0);
+            logical.to_physical(scale)
+        };
+        self.inner.window_event(
+            event_loop,
+            window_id,
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: physical,
+            },
+        );
+    }
+
+    fn automation_dispatch_mouse_button(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        state: ElementState,
+    ) {
+        self.inner.window_event(
+            event_loop,
+            window_id,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            },
+        );
+    }
+
+    fn automation_pump_for(&mut self, duration: Duration) {
+        let end = Instant::now() + duration;
+        while Instant::now() < end {
+            for view in self.inner.windows.values_mut() {
+                view.poll();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn lookup_node(doc: &mut dyn Document, selector: &str) -> anyhow::Result<usize> {
+        let id = selector
+            .strip_prefix('#')
+            .ok_or_else(|| anyhow!("only id selectors are supported for automation"))?;
+
+        let mut result = None;
+        let root = doc.root_node().id;
+        doc.iter_subtree_mut(root, |node_id, document| {
+            if result.is_some() {
+                return;
+            }
+            if let Some(node) = document.get_node(node_id) {
+                if node.attr(local_name!("id")) == Some(id) {
+                    result = Some(node_id);
+                }
+            }
+        });
+
+        result.ok_or_else(|| anyhow!("automation selector not found: {selector}"))
     }
 }
 
@@ -435,12 +693,7 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyR) => self.reload_document(true),
                     PhysicalKey::Code(KeyCode::KeyT) => self.toggle_theme(),
-                    PhysicalKey::Code(KeyCode::KeyB) => {
-                        if let Some(url) = self.url_history.pop() {
-                            self.current_input = url;
-                            self.reload_document(false);
-                        }
-                    }
+                    PhysicalKey::Code(KeyCode::KeyB) => self.go_back(),
                     _ => {}
                 }
             }
@@ -459,6 +712,11 @@ impl ApplicationHandler<BlitzShellEvent> for ReadmeApplication {
                             self.handle_navigation_message((**message).clone())
                         }
                     }
+                    return;
+                }
+
+                if event.downcast_ref::<AutomationEvent>().is_some() {
+                    self.process_automation_commands(event_loop);
                 }
             }
             BlitzShellEvent::Navigate(options) => {
