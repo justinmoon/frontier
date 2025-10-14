@@ -18,7 +18,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::automation::headless::{HeadlessSession, HeadlessSessionBuilder};
+use crate::automation::{HeadlessSession, HeadlessSessionBuilder};
 
 #[derive(Clone)]
 pub struct WebDriverConfig {

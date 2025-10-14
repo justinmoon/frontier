@@ -234,7 +234,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 [[package]]
 name = "anyrender"
 version = "0.5.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "kurbo 0.12.0",
  "peniko",
@@ -244,7 +244,7 @@ dependencies = [
 [[package]]
 name = "anyrender_svg"
 version = "0.5.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "anyrender",
  "image",
@@ -257,7 +257,7 @@ dependencies = [
 [[package]]
 name = "anyrender_vello"
 version = "0.5.2"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -275,7 +275,7 @@ dependencies = [
 [[package]]
 name = "anyrender_vello_cpu"
 version = "0.6.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -947,7 +947,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.1.4"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "accesskit",
  "app_units",
@@ -988,7 +988,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -999,7 +999,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -1010,7 +1010,7 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "anyrender",
  "anyrender_svg",
@@ -1030,7 +1030,7 @@ dependencies = [
 [[package]]
 name = "blitz-shell"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -1050,7 +1050,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "bitflags 2.9.4",
  "bytes",
@@ -1767,7 +1767,7 @@ dependencies = [
 [[package]]
 name = "debug_timer"
 version = "0.1.1"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 
 [[package]]
 name = "der-parser"
@@ -2670,7 +2670,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 1.0.69",
- "windows 0.58.0",
+ "windows 0.56.0",
 ]
 
 [[package]]
@@ -4204,7 +4204,7 @@ version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77e878c846a8abae00dd069496dbe8751b16ac1c3d6bd2a7283a938e8228f90d"
 dependencies = [
- "proc-macro-crate 3.4.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -6456,7 +6456,7 @@ checksum = "ca4c89da4ab6ac0beda8b03db38216967c99f1f7287a0f3b0f366b45d34ac7c4"
 [[package]]
 name = "stylo_taffy"
 version = "0.1.0"
-source = "git+https://github.com/DioxusLabs/blitz.git?rev=e0268796a2a416de62c4819ca4bea4dffbfc499c#e0268796a2a416de62c4819ca4bea4dffbfc499c"
+source = "git+https://github.com/justinmoon/blitz.git?branch=frontier#19a8ef50da6dc89adef77c59284f7d05c2dad31b"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -8101,7 +8101,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.1",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
