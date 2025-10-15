@@ -38,6 +38,15 @@
         };
 
         # Common arguments for all crane builds
+        libxkbcommonWithX11 =
+          if pkgs.stdenv.isLinux then
+            pkgs.libxkbcommon.override {
+              withX11 = true;
+              withWayland = true;
+            }
+          else
+            pkgs.libxkbcommon;
+
         commonArgs = {
           inherit src;
           pname = "frontier";
@@ -55,7 +64,7 @@
             apple-sdk
             libiconv
           ] ++ pkgs.lib.optionals stdenv.isLinux [
-            libxkbcommon
+            libxkbcommonWithX11
             wayland
             xorg.libX11
             xorg.libXcursor
