@@ -73,3 +73,39 @@ fn automation_timer_start_stop() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn automation_navigation_rebuilds_dom_bridge() -> Result<()> {
+    let asset_root = asset_root();
+    let host =
+        AutomationHost::spawn(AutomationHostConfig::default().with_asset_root(asset_root.clone()))?;
+
+    let session = host.session_from_asset("counter.html")?;
+
+    let counter_selector = ElementSelector::css("#counter-value");
+    let increment_selector = ElementSelector::css("#increment");
+    let timer_selector = ElementSelector::css("#timer-value");
+
+    let initial = session.wait_for_text(&counter_selector, default_wait())?;
+    assert_eq!(initial.trim(), "Count: 0");
+
+    session.click(&increment_selector)?;
+    session.pump(Duration::from_millis(50))?;
+    let after_click = session.wait_for_text(&counter_selector, default_wait())?;
+    assert_eq!(after_click.trim(), "Count: 1");
+
+    session.navigate_asset("timer.html")?;
+    let timer_text = session.wait_for_text(&timer_selector, default_wait())?;
+    assert_eq!(timer_text.trim(), "Elapsed: 0.0s");
+
+    session.navigate_asset("counter.html")?;
+    let reset = session.wait_for_text(&counter_selector, default_wait())?;
+    assert_eq!(reset.trim(), "Count: 0");
+
+    session.click(&increment_selector)?;
+    session.pump(Duration::from_millis(50))?;
+    let final_count = session.wait_for_text(&counter_selector, default_wait())?;
+    assert_eq!(final_count.trim(), "Count: 1");
+
+    Ok(())
+}

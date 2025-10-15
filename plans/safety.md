@@ -28,3 +28,7 @@ Follow option 1 for minimal churn: reconstruct `BlitzJsBridge` on every attach/r
 a borrowed reference instead of `NonNull`. That keeps FFI usage simple while letting the compiler
 prove safety. If JS APIs require long-lived handles, wrap the document in `Rc<RefCell<_>>` and track
 weak references instead of raw pointers.
+
+## Progress
+- Added a document generation counter plus pointer assertions to `DomState`/`BlitzJsBridge`; stale
+  bridges now panic with a targeted message instead of dereferencing freed memory.
