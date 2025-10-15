@@ -10,6 +10,13 @@ fi
 
 cd "$ROOT_DIR"
 
+run_step() {
+  local description="$1"
+  shift
+  printf '\n=== %s ===\n' "$description"
+  "$@"
+}
+
 # Ensure a display server is available for winit-based automation tests.
 # Lazily spin up a virtual display on headless Linux CI runners.
 if [[ "$(uname -s)" == "Linux" && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
@@ -34,18 +41,11 @@ if [[ "$(uname -s)" == "Linux" && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}"
   fi
 fi
 
-run_step() {
-  local description="$1"
-  shift
-  printf '\n=== %s ===\n' "$description"
-  "$@"
-}
-
 run_step "Updating submodules" git submodule update --init --recursive
 run_step "Checking formatting" cargo fmt --all -- --check
 run_step "Checking build" cargo check --workspace --all-targets
 run_step "Running clippy" cargo clippy --all-targets --workspace -- -D warnings
-run_step "Running test suite" cargo test
-run_step "Running online tests" cargo test --test online_test -- --ignored
+run_step "Running test suite (cpu-softbuffer)" cargo test --no-default-features --features cpu-softbuffer
+run_step "Running online tests (cpu-softbuffer)" cargo test --no-default-features --features cpu-softbuffer --test online_test -- --ignored
 
 printf '\nCI pipeline completed successfully.\n'

@@ -133,7 +133,7 @@
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               xorg.xvfb
-              pkgs.mesa.drivers
+              pkgs.mesa
             ];
 
           shellHook =
@@ -145,12 +145,13 @@
                 pkgs.xorg.libXi
                 pkgs.xorg.libXrandr
                 pkgs.xorg.libxcb
-                pkgs.mesa.drivers
+                pkgs.mesa
               ];
               linuxPkgConfigPath = pkgs.lib.makeSearchPath "lib/pkgconfig" [
                 pkgs.libxkbcommon
                 pkgs.xorg.libX11
                 pkgs.xorg.libxcb
+                pkgs.mesa
               ];
             in
               ''
@@ -177,10 +178,13 @@
                 export LIBGL_ALWAYS_SOFTWARE=1
                 export WGPU_BACKEND=gl
                 export WGPU_POWER_PREF=low-power
-                export LIBGL_DRIVERS_PATH=${pkgs.mesa.drivers}/lib/dri
+                export LIBGL_DRIVERS_PATH=${pkgs.mesa}/lib/dri
                 export MESA_GL_VERSION_OVERRIDE=3.3
                 export MESA_GLSL_VERSION_OVERRIDE=330
                 export WGPU_ALLOW_SLOW_BACKENDS=1
+                if [ -f "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json" ]; then
+                  export VK_ICD_FILENAMES="${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json"
+                fi
               '';
         };
 
