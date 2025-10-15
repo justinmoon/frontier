@@ -73,14 +73,24 @@ impl AutomationHost {
             .take()
             .ok_or_else(|| anyhow!("automation host stdout unavailable"))?;
         let mut reader = BufReader::new(stdout);
-        let mut first_line = String::new();
-        reader
-            .read_line(&mut first_line)
-            .context("read automation host banner")?;
-        let first_line = first_line.trim();
-        let addr = first_line
-            .strip_prefix("AUTOMATION_HOST_READY ")
-            .ok_or_else(|| anyhow!("unexpected automation banner: {first_line}"))?;
+        let mut banner = String::new();
+        let addr = loop {
+            banner.clear();
+            let bytes_read = reader
+                .read_line(&mut banner)
+                .context("read automation host banner")?;
+            if bytes_read == 0 {
+                return Err(anyhow!("automation host exited before reporting readiness"));
+            }
+            let trimmed = banner.trim();
+            if let Some(addr) = trimmed.strip_prefix("AUTOMATION_HOST_READY ") {
+                break addr.to_string();
+            }
+            // Forward any early stdout noise to stderr so the caller can diagnose issues.
+            if !trimmed.is_empty() {
+                eprintln!("automation_host: {trimmed}");
+            }
+        };
 
         let base_url =
             Url::parse(&format!("http://{addr}")).context("parse automation base url")?;
