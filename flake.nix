@@ -124,12 +124,16 @@
         devShells.default = craneLib.devShell {
           inputsFrom = [ frontier ];
 
-          packages = with pkgs; [
-            just
-            cargo-watch
-            cargo-nextest
-            git
-          ];
+          packages = with pkgs;
+            [
+              just
+              cargo-watch
+              cargo-nextest
+              git
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              xorg.xvfb
+            ];
 
           shellHook = ''
             export RUST_BACKTRACE=1
