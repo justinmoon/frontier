@@ -1,9 +1,10 @@
+#![allow(clippy::disallowed_types)]
+
 pub mod full_app;
-mod headless;
+pub(crate) mod headless;
 
 pub use full_app::{
-    AutomationCommand, AutomationEvent, AutomationResponse, AutomationResult, AutomationStateHandle,
+    AutomationArtifacts, AutomationCommand, AutomationEvent, AutomationReply, AutomationResponse,
+    AutomationResult, AutomationStateHandle, ElementSelector, KeyboardAction, PointerAction,
+    PointerButton, PointerTarget,
 };
-
-#[allow(unused_imports)]
-pub use headless::{HeadlessSession, HeadlessSessionBuilder};

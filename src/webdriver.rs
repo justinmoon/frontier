@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use axum::{
-    extract::{Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -18,7 +18,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::automation::{HeadlessSession, HeadlessSessionBuilder};
+use crate::automation::headless::{HeadlessSession, HeadlessSessionBuilder};
 
 #[derive(Clone)]
 pub struct WebDriverConfig {
@@ -63,15 +63,6 @@ pub async fn start_webdriver(addr: SocketAddr, config: WebDriverConfig) -> Resul
         .route("/session/:id/element", post(find_element))
         .route("/session/:id/element/:element/click", post(click_element))
         .route("/session/:id/element/:element/text", post(element_text))
-        .route(
-            "/session/:id/element/:element/value",
-            get(element_value).post(send_keys),
-        )
-        .route("/session/:id/element/:element/clear", post(clear_element))
-        .route(
-            "/session/:id/element/:element/attribute",
-            get(element_attribute),
-        )
         .route("/session/:id/frontier/pump", post(pump_session))
         .with_state(state);
 
@@ -180,45 +171,6 @@ async fn handle_command(
                 .map_err(|e| e.to_string())?;
             Ok(json!(null))
         }
-        Command::SendKeys {
-            session_id,
-            element,
-            text,
-        } => {
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| "unknown session".to_string())?;
-            let selector = session
-                .elements
-                .get(&element)
-                .cloned()
-                .ok_or_else(|| "unknown element".to_string())?;
-            session
-                .session
-                .send_keys(&selector, &text)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(json!(null))
-        }
-        Command::ClearElement {
-            session_id,
-            element,
-        } => {
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| "unknown session".to_string())?;
-            let selector = session
-                .elements
-                .get(&element)
-                .cloned()
-                .ok_or_else(|| "unknown element".to_string())?;
-            session
-                .session
-                .clear(&selector)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(json!(null))
-        }
         Command::ElementText {
             session_id,
             element,
@@ -236,43 +188,6 @@ async fn handle_command(
                 .inner_text(&selector)
                 .map_err(|e| e.to_string())?;
             Ok(json!(text))
-        }
-        Command::ElementValue {
-            session_id,
-            element,
-        } => {
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| "unknown session".to_string())?;
-            let selector = session
-                .elements
-                .get(&element)
-                .cloned()
-                .ok_or_else(|| "unknown element".to_string())?;
-            let value = session
-                .session
-                .element_value(&selector)
-                .map_err(|e| e.to_string())?;
-            Ok(json!(value))
-        }
-        Command::ElementAttribute {
-            session_id,
-            element,
-            name,
-        } => {
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| "unknown session".to_string())?;
-            let selector = session
-                .elements
-                .get(&element)
-                .cloned()
-                .ok_or_else(|| "unknown element".to_string())?;
-            let value = session
-                .session
-                .element_attribute(&selector, &name)
-                .map_err(|e| e.to_string())?;
-            Ok(json!(value))
         }
         Command::GetUrl { session_id } => {
             let session = sessions
@@ -404,11 +319,6 @@ struct FindElementPayload {
     value: String,
 }
 
-#[derive(Deserialize)]
-struct SendKeysPayload {
-    text: String,
-}
-
 async fn find_element(
     State(state): State<Arc<WebDriverState>>,
     AxumPath(id): AxumPath<String>,
@@ -466,87 +376,6 @@ async fn element_text(
         Command::ElementText {
             session_id,
             element,
-        },
-    )
-    .await
-}
-
-async fn element_value(
-    State(state): State<Arc<WebDriverState>>,
-    AxumPath((id, element)): AxumPath<(String, String)>,
-) -> Response {
-    let session_id = match Uuid::parse_str(&id) {
-        Ok(session_id) => session_id,
-        Err(_) => return invalid_session_response(&id),
-    };
-    send_command(
-        &state.command_tx,
-        Command::ElementValue {
-            session_id,
-            element,
-        },
-    )
-    .await
-}
-
-async fn send_keys(
-    State(state): State<Arc<WebDriverState>>,
-    AxumPath((id, element)): AxumPath<(String, String)>,
-    Json(payload): Json<SendKeysPayload>,
-) -> Response {
-    let session_id = match Uuid::parse_str(&id) {
-        Ok(session_id) => session_id,
-        Err(_) => return invalid_session_response(&id),
-    };
-    send_command(
-        &state.command_tx,
-        Command::SendKeys {
-            session_id,
-            element,
-            text: payload.text,
-        },
-    )
-    .await
-}
-
-async fn clear_element(
-    State(state): State<Arc<WebDriverState>>,
-    AxumPath((id, element)): AxumPath<(String, String)>,
-) -> Response {
-    let session_id = match Uuid::parse_str(&id) {
-        Ok(session_id) => session_id,
-        Err(_) => return invalid_session_response(&id),
-    };
-    send_command(
-        &state.command_tx,
-        Command::ClearElement {
-            session_id,
-            element,
-        },
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-struct ElementAttributeQuery {
-    name: String,
-}
-
-async fn element_attribute(
-    State(state): State<Arc<WebDriverState>>,
-    AxumPath((id, element)): AxumPath<(String, String)>,
-    Query(params): Query<ElementAttributeQuery>,
-) -> Response {
-    let session_id = match Uuid::parse_str(&id) {
-        Ok(session_id) => session_id,
-        Err(_) => return invalid_session_response(&id),
-    };
-    send_command(
-        &state.command_tx,
-        Command::ElementAttribute {
-            session_id,
-            element,
-            name: params.name,
         },
     )
     .await
@@ -649,27 +478,9 @@ enum Command {
         session_id: Uuid,
         element: String,
     },
-    SendKeys {
-        session_id: Uuid,
-        element: String,
-        text: String,
-    },
-    ClearElement {
-        session_id: Uuid,
-        element: String,
-    },
     ElementText {
         session_id: Uuid,
         element: String,
-    },
-    ElementValue {
-        session_id: Uuid,
-        element: String,
-    },
-    ElementAttribute {
-        session_id: Uuid,
-        element: String,
-        name: String,
     },
     GetUrl {
         session_id: Uuid,

@@ -124,31 +124,68 @@
         devShells.default = craneLib.devShell {
           inputsFrom = [ frontier ];
 
-          packages = with pkgs; [
-            just
-            cargo-watch
-            cargo-nextest
-            git
-          ];
+          packages = with pkgs;
+            [
+              just
+              cargo-watch
+              cargo-nextest
+              git
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              xorg.xvfb
+              pkgs.mesa
+            ];
 
-          shellHook = ''
-            export RUST_BACKTRACE=1
+          shellHook =
+            let
+              linuxLDLibraryPath = pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon
+                pkgs.xorg.libX11
+                pkgs.xorg.libXcursor
+                pkgs.xorg.libXi
+                pkgs.xorg.libXrandr
+                pkgs.xorg.libxcb
+                pkgs.mesa
+              ];
+              linuxPkgConfigPath = pkgs.lib.makeSearchPath "lib/pkgconfig" [
+                pkgs.libxkbcommon
+                pkgs.xorg.libX11
+                pkgs.xorg.libxcb
+                pkgs.mesa
+              ];
+            in
+              ''
+                export RUST_BACKTRACE=1
 
-            # Install git hooks
-            if [ -f scripts/hooks/post-checkout ]; then
-              mkdir -p .git/hooks
-              cp scripts/hooks/post-checkout .git/hooks/post-checkout
-              chmod +x .git/hooks/post-checkout
-              echo "Git hooks installed"
-            fi
+                # Install git hooks
+                if [ -f scripts/hooks/post-checkout ]; then
+                  mkdir -p .git/hooks
+                  cp scripts/hooks/post-checkout .git/hooks/post-checkout
+                  chmod +x .git/hooks/post-checkout
+                  echo "Git hooks installed"
+                fi
 
-            if command -v just >/dev/null 2>&1; then
-              echo "Available just recipes:"
-              just --list
-            else
-              echo "Install 'just' to list available recipes."
-            fi
-          '';
+                if command -v just >/dev/null 2>&1; then
+                  echo "Available just recipes:"
+                  just --list
+                else
+                  echo "Install 'just' to list available recipes."
+                fi
+              ''
+              + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export LD_LIBRARY_PATH=${linuxLDLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+                export PKG_CONFIG_PATH=${linuxPkgConfigPath}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+                export LIBGL_ALWAYS_SOFTWARE=1
+                export WGPU_BACKEND=gl
+                export WGPU_POWER_PREF=low-power
+                export LIBGL_DRIVERS_PATH=${pkgs.mesa}/lib/dri
+                export MESA_GL_VERSION_OVERRIDE=3.3
+                export MESA_GLSL_VERSION_OVERRIDE=330
+                export WGPU_ALLOW_SLOW_BACKENDS=1
+                if [ -f "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json" ]; then
+                  export VK_ICD_FILENAMES="${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json"
+                fi
+              '';
         };
 
         # App for `nix run`

@@ -13,32 +13,59 @@ How it works
 - Each HTTP request is translated into an `AutomationCommand`. The host enqueues the command and
   pokes the winit event loop with `AutomationEvent`, so ReadmeApplication processes the action via
   the same pointer/keyboard paths users do.
-- Responses are delivered over a oneshot channel after the app has handled the event, letting
-  callers observe DOM state or await timers without peeking into QuickJS internals.
+- Responses are delivered over a oneshot channel after the app has handled the event, and every
+  command now snapshots the DOM + metadata under `target/automation-artifacts/<session>/<step>` so
+  CI failures have breadcrumbs.
+
+Automation client
+------------------
+Tests should rely on the Rust helper in `src/automation_client/` instead of crafting raw HTTP.
+`AutomationHost::spawn` launches the binary, negotiates the bind address, and exposes an
+`AutomationSession` with ergonomics for clicks, rich pointer sequences, keyboard actions,
+`wait_for_text`, and `wait_for_element`. The helper also exposes the artifact directory so tests
+can attach additional diagnostics when needed.
 
 Endpoints (stable for now)
 --------------------------
-- `POST /session` → `{ "file"?: "index.html", "url"?: "https://..." }` creates the single active
-  session and optionally navigates immediately.
-- `POST /session/frontier/click` → `{ "selector": "#go-button" }` dispatches a real pointer click.
-- `POST /session/frontier/type` → `{ "selector": "#url-input", "text": "https://example" }`
-  focuses the element and commits text through IME events.
-- `POST /session/frontier/pump` → `{ "milliseconds": 500 }` pumps timers/animation for the given
-  duration (temporary escape hatch while we build higher-level waits).
-- `GET  /session/frontier/text?selector=#content` returns `{ "value": "…" }` so tests can assert on
-  rendered text.
+- Selectors are structured records: `{"selector": {"kind": "css", "selector": "#status"}}` or
+  `{"selector": {"kind": "role", "role": "button", "name": "Submit"}}`. Query parameters use
+  `?kind=css&selector=#status` or `?kind=role&role=button&name=Submit`.
+- `POST /session` creates the single active session (optionally navigating immediately).
+- `POST /session/frontier/click` dispatches a real pointer click.
+- `POST /session/frontier/pointer` executes WebDriver-style pointer sequences (move/down/up/scroll).
+- `POST /session/frontier/type` focuses the element and commits text through IME events.
+- `POST /session/frontier/keyboard` synthesises keyboard text and shortcut actions.
+- `POST /session/frontier/focus` / `scroll` ensure targets are ready before interacting.
+- `POST /session/frontier/pump` still exists as the low-level escape hatch while higher-level
+  waits are built out.
+- `GET  /session/frontier/text?...` and `GET /session/frontier/exists?...` expose rendered text and
+  role/name presence for assertions.
 
 Example (Rust integration test)
 -------------------------------
 ```rust
-let (mut host, addr) = launch_host(&asset_root)?; // spawn automation_host, read READY banner
-let client = reqwest::blocking::Client::new();
+use std::path::PathBuf;
 
-create_session(&client, &addr, "index.html")?;
-type_text(&client, &addr, "#url-input", "file:///…/timer.html")?;
-click(&client, &addr, "#go-button")?;
-pump(&client, &addr, Duration::from_millis(500))?;
-let heading = get_text(&client, &addr, "#timer-heading")?;
+use frontier::automation_client::{
+    AutomationHost, AutomationHostConfig, ElementSelector, WaitOptions,
+};
+
+let asset_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/react-demos");
+let host = AutomationHost::spawn(
+    AutomationHostConfig::default().with_asset_root(asset_root)
+)?;
+
+let session = host.session_from_asset("index.html")?;
+let timer_url = "file:///…/timer.html";
+
+session.type_text(&ElementSelector::css("#url-input"), timer_url)?;
+session.click(&ElementSelector::css("#go-button"))?;
+session.navigate_url(timer_url)?;
+
+let heading = session.wait_for_text(
+    &ElementSelector::css("#timer-heading"),
+    WaitOptions::default_text_wait(),
+)?;
 assert!(heading.contains("Timer"));
 ```
 
@@ -49,10 +76,17 @@ worker threads, so embedding the app in-process deadlocks. The host sidesteps th
 real browser process and talking to it over HTTP, which also matches the project goal of “tests
 speak WebDriver APIs and never reach into QuickJS.”
 
+Artifacts
+---------
+`target/automation-artifacts/<session>/<step_label>` contains:
+- `command.txt` – debug dump of the command that ran.
+- `reply.json` – serialised `AutomationResponse` plus any artifacts collected for that command.
+- `dom.html` – DOM snapshot (when QuickJS can serialise it).
+- `error.txt` – present whenever the command returned `Err`, mirroring the failure surfaced to the
+  client helper.
+
 Next steps
 ----------
-- Flesh out the HTTP surface to align with the official WebDriver spec and add richer assertions
-  (DOM queries by role/name, screenshots, network captures).
-- Capture run artifacts (DOM snapshots, console output, relay traffic) so CI failures are easy to
-  debug without reruns.
-- Package a small client helper crate to hide the raw HTTP calls inside tests.
+- Continue fleshing out WebDriver compatibility (screenshots, network captures, richer waits).
+- Capture console output and QuickJS exception summaries alongside DOM snapshots.
+- Drive more suites through `automation_client` so raw HTTP usage can eventually be removed.

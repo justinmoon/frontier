@@ -1,0 +1,6 @@
+disallowed-types = [
+    { path = "frontier::automation::full_app::AutomationCommand", reason = "Use frontier::automation_client instead of reaching into automation internals" },
+    { path = "frontier::automation::full_app::AutomationState", reason = "Use frontier::automation_client instead of reaching into automation internals" },
+    { path = "frontier::automation::full_app::AutomationStateHandle", reason = "Use frontier::automation_client instead of reaching into automation internals" },
+    { path = "frontier::automation::full_app::AutomationTask", reason = "Use frontier::automation_client instead of reaching into automation internals" }
+]

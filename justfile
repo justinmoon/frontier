@@ -10,9 +10,10 @@ run *ARGS:
 ci:
     nix run .#ci
 
-# Launch the React micro-demos landing page inside Frontier
+# Launch the React micro-demos landing page inside Frontier.
+# The browser runs interactively but exits automatically after 30s so CI doesn't hang.
 react-demos:
-    cargo run --bin frontier -- "file://$(pwd)/assets/react-demos/index.html"
+    bash -lc 'timeout 30 cargo run --bin frontier -- "file://$(pwd)/assets/react-demos/index.html"; code=$?; if [ $code -eq 124 ]; then echo "frontier exited after 30s timeout"; exit 0; else exit $code; fi'
 
 # Run all tests (or specific test with args)
 test *ARGS:

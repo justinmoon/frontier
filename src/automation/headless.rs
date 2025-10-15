@@ -6,12 +6,11 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use blitz_dom::net::Resource;
-use blitz_dom::{local_name, qual_name, BaseDocument, Document, DocumentConfig};
+use blitz_dom::{local_name, BaseDocument, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_traits::events::{
-    BlitzImeEvent, BlitzInputEvent, BlitzMouseButtonEvent, DomEvent, DomEventData,
-    MouseEventButton, MouseEventButtons, UiEvent,
+    BlitzMouseButtonEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
 };
 use blitz_traits::net::DummyNetCallback;
 use tokio::time::sleep;
@@ -160,79 +159,6 @@ impl HeadlessSession {
             .unwrap_or_default())
     }
 
-    pub async fn send_keys(&mut self, selector: &str, text: &str) -> Result<()> {
-        let node_id = self.node_id(selector)?;
-        self.document.set_focus_to(node_id);
-
-        for ch in text.chars() {
-            self.document
-                .handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(ch.to_string())));
-            self.pump_for(Duration::from_millis(10)).await;
-        }
-
-        Ok(())
-    }
-
-    pub async fn type_text(&mut self, selector: &str, text: &str) -> Result<()> {
-        self.send_keys(selector, text).await
-    }
-
-    pub async fn clear(&mut self, selector: &str) -> Result<()> {
-        self.set_input_value(selector, "")?;
-        self.pump_for(Duration::from_millis(10)).await;
-        Ok(())
-    }
-
-    pub fn element_value(&mut self, selector: &str) -> Result<String> {
-        let element_id = selector
-            .strip_prefix('#')
-            .ok_or_else(|| anyhow!("only id selectors are supported (got {selector})"))?;
-
-        let script = format!(
-            "(function() {{\n                const el = document.getElementById({element_id:?});\n                if (!el) return '';\n                const value = el.value;\n                return typeof value === 'string' ? value : '';\n            }})()"
-        );
-
-        self.runtime
-            .environment()
-            .eval_with::<Option<String>>(&script, "webdriver-element-value.js")
-            .context("evaluate element value script")?
-            .ok_or_else(|| anyhow!("element id not found: {selector}"))
-    }
-
-    pub fn element_attribute(&mut self, selector: &str, attribute: &str) -> Result<Option<String>> {
-        let node_id = self.node_id(selector)?;
-        Ok(self
-            .document
-            .get_node(node_id)
-            .and_then(|node| node.element_data())
-            .and_then(|element| {
-                element
-                    .attrs()
-                    .iter()
-                    .find(|attr| attr.name.local.as_ref() == attribute)
-                    .map(|attr| attr.value.to_string())
-            }))
-    }
-
-    pub fn eval(&mut self, script: &str) -> Result<()> {
-        let environment = self.runtime.environment();
-        environment.reattach_document(&mut self.document);
-        environment
-            .eval(script, "headless-eval.js")
-            .context("eval script")
-    }
-
-    pub fn eval_with<V>(&mut self, script: &str) -> Result<V>
-    where
-        V: for<'js> rquickjs::FromJs<'js>,
-    {
-        let environment = self.runtime.environment();
-        environment.reattach_document(&mut self.document);
-        environment
-            .eval_with(script, "headless-eval.js")
-            .context("eval script")
-    }
-
     pub(crate) fn ensure_selector(&mut self, selector: &str) -> Result<()> {
         let _ = self.node_id(selector)?;
         Ok(())
@@ -268,27 +194,6 @@ impl HeadlessSession {
             .strip_prefix('#')
             .ok_or_else(|| anyhow!("only id selectors are supported (got {selector})"))?;
         lookup_node_id(&mut *self.document, id).ok_or_else(|| anyhow!("element id not found: {id}"))
-    }
-
-    fn set_input_value(&mut self, selector: &str, value: &str) -> Result<()> {
-        let node_id = self.node_id(selector)?;
-        {
-            let mut mutator = self.document.mutate();
-            mutator.set_attribute(node_id, qual_name!("value", html), value);
-        }
-        let chain = self.document.node_chain(node_id);
-        let event = DomEvent::new(
-            node_id,
-            DomEventData::Input(BlitzInputEvent {
-                value: value.to_string(),
-            }),
-        );
-        let environment = self.runtime.environment();
-        environment.reattach_document(&mut self.document);
-        environment
-            .dispatch_dom_event(&event, &chain)
-            .context("dispatch input event")?;
-        Ok(())
     }
 
     pub fn current_url(&self) -> &Url {

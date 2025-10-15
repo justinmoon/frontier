@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Automation Demo</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+      }
+
+      .spacer {
+        height: 1200px;
+      }
+
+      .panel {
+        padding: 24px;
+        background: #f0f0f0;
+        border-top: 1px solid #ccc;
+      }
+
+      #status {
+        margin-top: 16px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="spacer"></div>
+    <section class="panel">
+      <h1 id="title">Automation Interaction Demo</h1>
+      <label for="name-input">Name</label>
+      <input
+        id="name-input"
+        type="text"
+        role="textbox"
+        aria-label="Name input"
+        placeholder="Ada"
+      />
+      <button id="submit" role="button" aria-label="Submit form">Submit</button>
+      <div id="status">Idle</div>
+    </section>
+    <script>
+      const input = document.getElementById('name-input');
+      const button = document.getElementById('submit');
+      button.addEventListener('click', () => {
+        const status = document.getElementById('status');
+        status.textContent = `Hello, ${input.value}!`;
+        setTimeout(() => {
+          let confirmation = document.getElementById('confirmation');
+          if (!confirmation) {
+            confirmation = document.createElement('div');
+            confirmation.id = 'confirmation';
+            confirmation.setAttribute('role', 'status');
+            confirmation.textContent = 'Submitted';
+            const parent = status.parentNode;
+            if (parent && 'insertBefore' in parent) {
+              parent.insertBefore(confirmation, status.nextSibling);
+            }
+          }
+        }, 100);
+      });
+    </script>
+  </body>
+</html>

@@ -1,9 +1,14 @@
+#![allow(clippy::disallowed_types)]
+
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[allow(clippy::disallowed_types)]
 use crate::automation::{
-    AutomationCommand, AutomationEvent, AutomationResponse, AutomationResult, AutomationStateHandle,
+    AutomationArtifacts, AutomationCommand, AutomationEvent, AutomationReply, AutomationResponse,
+    AutomationResult, AutomationStateHandle, ElementSelector, KeyboardAction, PointerAction,
+    PointerButton, PointerTarget,
 };
 use crate::chrome::wrap_with_url_bar;
 use crate::js::processor::ScriptExecutionSummary;
@@ -19,15 +24,17 @@ use blitz_dom::{local_name, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
+use blitz_traits::events::{BlitzInputEvent, DomEvent, DomEventData};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html_escape::encode_text;
 use keyboard_types::Modifiers;
 use tokio::runtime::Handle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalPosition;
+use winit::dpi::{LogicalPosition, PhysicalPosition};
 use winit::event::{
-    DeviceId, ElementState, Ime, Modifiers as WinitModifiers, MouseButton, StartCause, WindowEvent,
+    DeviceId, ElementState, Ime, Modifiers as WinitModifiers, MouseButton, MouseScrollDelta,
+    StartCause, TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -477,27 +484,33 @@ impl ReadmeApplication {
         event_loop: &ActiveEventLoop,
         command: AutomationCommand,
     ) -> AutomationResult {
-        match command {
+        let response = match command {
             AutomationCommand::Click { selector } => {
-                let (window_id, x, y) = self.automation_pointer_for_selector(&selector)?;
-                self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
-                self.automation_dispatch_mouse_button(event_loop, window_id, ElementState::Pressed);
-                self.automation_dispatch_mouse_button(
-                    event_loop,
-                    window_id,
-                    ElementState::Released,
-                );
-                Ok(AutomationResponse::None)
+                let actions = vec![
+                    PointerAction::Move {
+                        to: PointerTarget::Element {
+                            selector: selector.clone(),
+                            offset: None,
+                        },
+                    },
+                    PointerAction::Down {
+                        button: PointerButton::Primary,
+                    },
+                    PointerAction::Pause { duration_ms: 16 },
+                    PointerAction::Up {
+                        button: PointerButton::Primary,
+                    },
+                ];
+                self.automation_run_pointer_sequence(event_loop, &actions)?;
+                AutomationResponse::None
             }
             AutomationCommand::TypeText { selector, text } => {
-                let (window_id, x, y) = self.automation_pointer_for_selector(&selector)?;
-                self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
-                self.automation_dispatch_mouse_button(event_loop, window_id, ElementState::Pressed);
-                self.automation_dispatch_mouse_button(
-                    event_loop,
-                    window_id,
-                    ElementState::Released,
-                );
+                self.automation_focus_selector(event_loop, &selector)?;
+                self.automation_set_input_value(&selector, &text)?;
+
+                let window_id = self
+                    .automation_first_window_id()
+                    .ok_or_else(|| anyhow!("automation window not ready"))?;
 
                 self.current_input = text.clone();
                 for ch in text.chars() {
@@ -509,25 +522,51 @@ impl ReadmeApplication {
                         WindowEvent::Ime(Ime::Commit(committed)),
                     );
                 }
-                Ok(AutomationResponse::None)
+                AutomationResponse::None
             }
             AutomationCommand::GetText { selector } => {
                 let text = self.automation_element_text(&selector)?;
-                Ok(AutomationResponse::Text(text))
+                AutomationResponse::Text(text)
+            }
+            AutomationCommand::ElementExists { selector } => {
+                let exists = self.automation_selector_exists(&selector);
+                AutomationResponse::Bool(exists)
             }
             AutomationCommand::Pump { duration_ms } => {
                 self.automation_pump_for(Duration::from_millis(duration_ms));
-                Ok(AutomationResponse::None)
+                AutomationResponse::None
             }
             AutomationCommand::Navigate { target } => {
                 self.spawn_navigation(target, false);
-                Ok(AutomationResponse::None)
+                AutomationResponse::None
+            }
+            AutomationCommand::PointerSequence { actions } => {
+                self.automation_run_pointer_sequence(event_loop, &actions)?;
+                AutomationResponse::None
+            }
+            AutomationCommand::KeyboardSequence { actions } => {
+                self.automation_run_keyboard_sequence(event_loop, &actions)?;
+                AutomationResponse::None
+            }
+            AutomationCommand::Focus { selector } => {
+                self.automation_focus_selector(event_loop, &selector)?;
+                AutomationResponse::None
+            }
+            AutomationCommand::ScrollIntoView { selector } => {
+                self.automation_scroll_into_view(&selector)?;
+                AutomationResponse::None
             }
             AutomationCommand::Shutdown => {
                 event_loop.exit();
-                Ok(AutomationResponse::None)
+                AutomationResponse::None
             }
-        }
+        };
+
+        let artifacts = self.automation_collect_artifacts();
+        Ok(AutomationReply {
+            response,
+            artifacts,
+        })
     }
 
     fn automation_first_window_id(&self) -> Option<WindowId> {
@@ -536,7 +575,7 @@ impl ReadmeApplication {
 
     fn automation_node_for_selector(
         &mut self,
-        selector: &str,
+        selector: &ElementSelector,
     ) -> anyhow::Result<(WindowId, usize)> {
         let window_id = self
             .automation_first_window_id()
@@ -554,26 +593,16 @@ impl ReadmeApplication {
 
     fn automation_pointer_for_selector(
         &mut self,
-        selector: &str,
+        selector: &ElementSelector,
     ) -> anyhow::Result<(WindowId, f64, f64)> {
-        let (window_id, node_id) = self.automation_node_for_selector(selector)?;
-        let (x, y) = {
-            let view = self
-                .inner
-                .windows
-                .get_mut(&window_id)
-                .ok_or_else(|| anyhow!("automation window missing"))?;
-            let node = view
-                .doc
-                .get_node(node_id)
-                .ok_or_else(|| anyhow!("automation node disappeared"))?;
-            let synthetic = node.synthetic_click_event_data(Modifiers::default());
-            (synthetic.x as f64, synthetic.y as f64)
+        let target = PointerTarget::Element {
+            selector: selector.clone(),
+            offset: None,
         };
-        Ok((window_id, x, y))
+        self.automation_pointer_for_target(&target)
     }
 
-    fn automation_element_text(&mut self, selector: &str) -> anyhow::Result<String> {
+    fn automation_element_text(&mut self, selector: &ElementSelector) -> anyhow::Result<String> {
         let (window_id, node_id) = self.automation_node_for_selector(selector)?;
         let view = self
             .inner
@@ -619,17 +648,313 @@ impl ReadmeApplication {
         &mut self,
         event_loop: &ActiveEventLoop,
         window_id: WindowId,
+        button: PointerButton,
         state: ElementState,
     ) {
+        let mapped_button = match button {
+            PointerButton::Primary => MouseButton::Left,
+            PointerButton::Secondary => MouseButton::Right,
+            PointerButton::Auxiliary => MouseButton::Middle,
+        };
         self.inner.window_event(
             event_loop,
             window_id,
             WindowEvent::MouseInput {
                 device_id: DeviceId::dummy(),
                 state,
-                button: MouseButton::Left,
+                button: mapped_button,
             },
         );
+    }
+
+    fn automation_dispatch_scroll(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        delta_x: f64,
+        delta_y: f64,
+    ) {
+        self.inner.window_event(
+            event_loop,
+            window_id,
+            WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
+                phase: TouchPhase::Moved,
+            },
+        );
+    }
+
+    fn automation_pointer_for_target(
+        &mut self,
+        target: &PointerTarget,
+    ) -> anyhow::Result<(WindowId, f64, f64)> {
+        match target {
+            PointerTarget::Element { selector, offset } => {
+                let (window_id, node_id) = self.automation_node_for_selector(selector)?;
+                let (x, y) = {
+                    let view = self
+                        .inner
+                        .windows
+                        .get_mut(&window_id)
+                        .ok_or_else(|| anyhow!("automation window missing"))?;
+                    let node = view
+                        .doc
+                        .get_node(node_id)
+                        .ok_or_else(|| anyhow!("automation node disappeared"))?;
+                    let synthetic = node.synthetic_click_event_data(Modifiers::default());
+                    (synthetic.x as f64, synthetic.y as f64)
+                };
+                let applied = offset.unwrap_or_default();
+                Ok((window_id, x + applied.x, y + applied.y))
+            }
+            PointerTarget::Viewport { x, y } => {
+                let window_id = self
+                    .automation_first_window_id()
+                    .ok_or_else(|| anyhow!("automation window not ready"))?;
+                Ok((window_id, *x, *y))
+            }
+        }
+    }
+
+    fn automation_run_pointer_sequence(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        actions: &[PointerAction],
+    ) -> anyhow::Result<()> {
+        let mut active_window: Option<WindowId> = None;
+        for action in actions {
+            match action {
+                PointerAction::Move { to } => {
+                    let (window_id, x, y) = self.automation_pointer_for_target(to)?;
+                    self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
+                    active_window = Some(window_id);
+                }
+                PointerAction::Down { button } => {
+                    let window_id = active_window
+                        .ok_or_else(|| anyhow!("pointer down requires an active window"))?;
+                    self.automation_dispatch_mouse_button(
+                        event_loop,
+                        window_id,
+                        *button,
+                        ElementState::Pressed,
+                    );
+                }
+                PointerAction::Up { button } => {
+                    let window_id = active_window
+                        .ok_or_else(|| anyhow!("pointer up requires an active window"))?;
+                    self.automation_dispatch_mouse_button(
+                        event_loop,
+                        window_id,
+                        *button,
+                        ElementState::Released,
+                    );
+                }
+                PointerAction::Scroll {
+                    origin,
+                    delta_x,
+                    delta_y,
+                } => {
+                    let (window_id, x, y) = match origin {
+                        Some(target) => {
+                            let (wid, px, py) = self.automation_pointer_for_target(target)?;
+                            self.automation_dispatch_cursor_move(event_loop, wid, px, py);
+                            (wid, px, py)
+                        }
+                        None => {
+                            let wid = active_window.ok_or_else(|| {
+                                anyhow!("scroll action requires a prior move to define origin")
+                            })?;
+                            (wid, 0.0, 0.0)
+                        }
+                    };
+                    self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
+                    self.automation_dispatch_scroll(event_loop, window_id, *delta_x, *delta_y);
+                    active_window = Some(window_id);
+                }
+                PointerAction::Pause { duration_ms } => {
+                    thread::sleep(Duration::from_millis(*duration_ms));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn automation_run_keyboard_sequence(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        actions: &[KeyboardAction],
+    ) -> anyhow::Result<()> {
+        for action in actions {
+            match action {
+                KeyboardAction::Text { value } => {
+                    let window_id = self
+                        .automation_first_window_id()
+                        .ok_or_else(|| anyhow!("automation window not ready"))?;
+                    self.current_input = value.clone();
+                    self.inner.window_event(
+                        event_loop,
+                        window_id,
+                        WindowEvent::Ime(Ime::Commit(value.clone())),
+                    );
+                }
+                KeyboardAction::Shortcut { key, modifiers } => {
+                    self.automation_dispatch_shortcut(key, modifiers)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn automation_dispatch_shortcut(
+        &mut self,
+        key: &str,
+        modifiers: &[String],
+    ) -> anyhow::Result<()> {
+        let runtime = match self.current_js_runtime.as_ref() {
+            Some(runtime) => runtime,
+            None => {
+                warn!(
+                    target = "automation",
+                    %key,
+                    "keyboard shortcut requested without JS runtime; skipping"
+                );
+                return Ok(());
+            }
+        };
+
+        let script = Self::build_shortcut_script(key, modifiers)?;
+        runtime
+            .environment()
+            .eval_with::<bool>(&script, "automation-shortcut.js")
+            .map(|_| ())
+            .map_err(|err| anyhow!("dispatching keyboard shortcut failed: {err}"))
+    }
+
+    fn automation_scroll_into_view(&mut self, selector: &ElementSelector) -> anyhow::Result<()> {
+        if let Some(runtime) = self.current_js_runtime.as_ref() {
+            let script = Self::selector_script(
+                selector,
+                "element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); return true;",
+            )?;
+            if runtime
+                .environment()
+                .eval_with::<bool>(&script, "automation-scroll.js")
+                .unwrap_or(false)
+            {
+                self.automation_pump_for(Duration::from_millis(16));
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn automation_set_input_value(
+        &mut self,
+        selector: &ElementSelector,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let (window_id, node_id) = self.automation_node_for_selector(selector)?;
+        let value_json = serde_json::to_string(value)?;
+
+        if let Some(runtime) = self.current_js_runtime.as_ref() {
+            if let Ok(script) = Self::selector_script(
+                selector,
+                &format!(
+                    "try {{\n                        element.value = {value_json};\n                        element.setAttribute('value', {value_json});\n                        return true;\n                    }} catch (err) {{\n                        return false;\n                    }}",
+                    value_json = value_json
+                ),
+            ) {
+                let _ = runtime
+                    .environment()
+                    .eval_with::<bool>(&script, "automation-set-input.js");
+            }
+
+            if let Some(window) = self.inner.windows.get_mut(&window_id) {
+                let chain = window.doc.node_chain(node_id);
+                let event = DomEvent::new(
+                    node_id,
+                    DomEventData::Input(BlitzInputEvent {
+                        value: value.to_string(),
+                    }),
+                );
+                let _ = runtime.environment().dispatch_dom_event(&event, &chain);
+            }
+        }
+
+        self.automation_pump_for(Duration::from_millis(16));
+        Ok(())
+    }
+
+    fn automation_focus_selector(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        selector: &ElementSelector,
+    ) -> anyhow::Result<()> {
+        self.automation_scroll_into_view(selector)?;
+        if let Some(runtime) = self.current_js_runtime.as_ref() {
+            if let Ok(script) = Self::selector_script(selector, "element.focus(); return true;") {
+                if runtime
+                    .environment()
+                    .eval_with::<bool>(&script, "automation-focus.js")
+                    .unwrap_or(false)
+                {
+                    self.automation_pump_for(Duration::from_millis(16));
+                    return Ok(());
+                }
+            }
+        }
+
+        let (window_id, x, y) = self.automation_pointer_for_selector(selector)?;
+        self.automation_dispatch_cursor_move(event_loop, window_id, x, y);
+        self.automation_dispatch_mouse_button(
+            event_loop,
+            window_id,
+            PointerButton::Primary,
+            ElementState::Pressed,
+        );
+        self.automation_dispatch_mouse_button(
+            event_loop,
+            window_id,
+            PointerButton::Primary,
+            ElementState::Released,
+        );
+        Ok(())
+    }
+
+    fn automation_element_exists(&mut self, selector: &ElementSelector) -> bool {
+        self.automation_node_for_selector(selector).is_ok()
+    }
+
+    fn automation_selector_exists(&mut self, selector: &ElementSelector) -> bool {
+        if let Some(runtime) = self.current_js_runtime.as_ref() {
+            if let Ok(script) = Self::selector_script(selector, "return true;") {
+                if let Ok(found) = runtime
+                    .environment()
+                    .eval_with::<bool>(&script, "automation-exists.js")
+                {
+                    return found;
+                }
+            }
+        }
+        self.automation_element_exists(selector)
+    }
+
+    fn automation_collect_artifacts(&mut self) -> Option<AutomationArtifacts> {
+        let runtime = self.current_js_runtime.as_ref()?;
+        match runtime.environment().document_html() {
+            Ok(dom) => Some(AutomationArtifacts {
+                dom_html: Some(dom),
+            }),
+            Err(err) => {
+                warn!(
+                    target = "automation",
+                    error = %err,
+                    "failed to capture DOM snapshot"
+                );
+                Some(AutomationArtifacts::default())
+            }
+        }
     }
 
     fn automation_pump_for(&mut self, duration: Duration) {
@@ -642,11 +967,22 @@ impl ReadmeApplication {
         }
     }
 
-    fn lookup_node(doc: &mut dyn Document, selector: &str) -> anyhow::Result<usize> {
-        let id = selector
-            .strip_prefix('#')
-            .ok_or_else(|| anyhow!("only id selectors are supported for automation"))?;
+    fn lookup_node(doc: &mut dyn Document, selector: &ElementSelector) -> anyhow::Result<usize> {
+        let result = match selector {
+            ElementSelector::Css { selector } => Self::lookup_css(doc, selector),
+            ElementSelector::Role { role, name } => Self::lookup_role(doc, role, name.as_deref()),
+        };
 
+        result.ok_or_else(|| {
+            anyhow!(
+                "automation selector not found: {}",
+                Self::describe_selector(selector)
+            )
+        })
+    }
+
+    fn lookup_css(doc: &mut dyn Document, selector: &str) -> Option<usize> {
+        let id = selector.strip_prefix('#')?;
         let mut result = None;
         let root = doc.root_node().id;
         doc.iter_subtree_mut(root, |node_id, document| {
@@ -659,8 +995,103 @@ impl ReadmeApplication {
                 }
             }
         });
+        result
+    }
 
-        result.ok_or_else(|| anyhow!("automation selector not found: {selector}"))
+    fn lookup_role(doc: &mut dyn Document, role: &str, name: Option<&str>) -> Option<usize> {
+        let desired_name = name.map(Self::normalize_label);
+        let mut matches = Vec::new();
+        let root = doc.root_node().id;
+        doc.iter_subtree_mut(root, |node_id, document| {
+            if let Some(node) = document.get_node(node_id) {
+                if node.attr(local_name!("role")) == Some(role) {
+                    matches.push(node_id);
+                }
+            }
+        });
+        if let Some(target) = desired_name {
+            for node_id in matches {
+                if let Some(actual) = Self::node_accessible_name(doc, node_id) {
+                    if Self::normalize_label(&actual) == target {
+                        return Some(node_id);
+                    }
+                }
+            }
+            None
+        } else {
+            matches.into_iter().next()
+        }
+    }
+
+    fn node_accessible_name(doc: &mut dyn Document, node_id: usize) -> Option<String> {
+        let node = doc.get_node(node_id)?;
+
+        if let Some(label) = node.attr(local_name!("aria-label")) {
+            let trimmed = label.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+
+        let text = node.text_content();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn normalize_label(value: &str) -> String {
+        value.trim().to_ascii_lowercase()
+    }
+
+    fn describe_selector(selector: &ElementSelector) -> String {
+        match selector {
+            ElementSelector::Css { selector } => format!("css({selector})"),
+            ElementSelector::Role { role, name } => match name {
+                Some(name) => format!("role({role}, name={name})"),
+                None => format!("role({role})"),
+            },
+        }
+    }
+
+    fn selector_script(selector: &ElementSelector, body: &str) -> anyhow::Result<String> {
+        let lookup = Self::selector_lookup_expression(selector)?;
+        Ok(format!(
+            "(() => {{ const element = {lookup}; if (!element) return false; {body} }})()"
+        ))
+    }
+
+    fn selector_lookup_expression(selector: &ElementSelector) -> anyhow::Result<String> {
+        match selector {
+            ElementSelector::Css { selector } => {
+                let selector_json = serde_json::to_string(selector)?;
+                Ok(format!("document.querySelector({selector_json})"))
+            }
+            ElementSelector::Role { role, name } => {
+                let role_json = serde_json::to_string(role)?;
+                let name_json = match name {
+                    Some(value) => serde_json::to_string(value)?,
+                    None => "null".to_string(),
+                };
+                Ok(format!(
+                    "(() => {{\n                        const role = {role_json};\n                        const desiredNameRaw = {name_json};\n                        const targetName = desiredNameRaw && desiredNameRaw.toLowerCase();\n                        const elements = Array.from(document.querySelectorAll(`[role=\"${{role}}\"]`));\n                        const normalize = (el) => {{\n                            const labelled = el.getAttribute('aria-label');\n                            if (labelled && labelled.trim().length) {{\n                                return labelled.trim();\n                            }}\n                            const labelledBy = el.getAttribute('aria-labelledby');\n                            if (labelledBy) {{\n                                for (const id of labelledBy.split(/\\s+/).filter(Boolean)) {{\n                                    const refEl = document.getElementById(id);\n                                    if (refEl) {{\n                                        const text = (refEl.innerText || refEl.textContent || '').trim();\n                                        if (text.length) return text;\n                                    }}\n                                }}\n                            }}\n                            const text = (el.innerText || el.textContent || '').trim();\n                            return text;\n                        }};\n                        if (targetName === null) {{\n                            return elements.find(Boolean) ?? null;\n                        }}\n                        return elements.find(el => normalize(el).toLowerCase() === targetName) ?? null;\n                    }})()"
+                ))
+            }
+        }
+    }
+
+    fn build_shortcut_script(key: &str, modifiers: &[String]) -> anyhow::Result<String> {
+        let key_json = serde_json::to_string(key)?;
+        let normalized: Vec<String> = modifiers
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .collect();
+        let modifiers_json = serde_json::to_string(&normalized)?;
+        Ok(format!(
+            "(() => {{\n                const active = document.activeElement || document.body;\n                if (!active) return false;\n                const key = {key_json};\n                const modifiers = new Set({modifiers_json});\n                const eventInit = {{\n                    key,\n                    code: key,\n                    bubbles: true,\n                    cancelable: true,\n                    ctrlKey: modifiers.has('ctrl') || modifiers.has('control'),\n                    metaKey: modifiers.has('meta') || modifiers.has('command') || modifiers.has('cmd'),\n                    shiftKey: modifiers.has('shift'),\n                    altKey: modifiers.has('alt') || modifiers.has('option')\n                }};\n                const down = active.dispatchEvent(new KeyboardEvent('keydown', eventInit));\n                const up = active.dispatchEvent(new KeyboardEvent('keyup', eventInit));\n                return down && up;\n            }})()"
+        ))
     }
 }
 
