@@ -40,10 +40,3 @@ Frontier’s automation story now revolves around the full chrome process instea
 
 4. **Higher-Level Waits**
    - Layer user-surface waits such as `wait_for_network_idle`, accessibility queries, and form-field assertions so tests rarely call `pump` directly.
-
-5. **CI / Platform Expansion**
-   - Exercise multiple relay/network topologies in CI, add GPU-backed runs, and schedule nightly suites with randomized relays.
-
-6. **Future Enhancements**
-   - Explore property-based or randomized flows once deterministic coverage stabilises.
-   - Wire the automation host into developer tooling (e.g. `cargo automation test`) for faster iteration.
