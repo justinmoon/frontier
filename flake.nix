@@ -133,6 +133,7 @@
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               xorg.xvfb
+              pkgs.mesa.drivers
             ];
 
           shellHook =
@@ -144,6 +145,7 @@
                 pkgs.xorg.libXi
                 pkgs.xorg.libXrandr
                 pkgs.xorg.libxcb
+                pkgs.mesa.drivers
               ];
               linuxPkgConfigPath = pkgs.lib.makeSearchPath "lib/pkgconfig" [
                 pkgs.libxkbcommon
@@ -172,6 +174,13 @@
               + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
                 export LD_LIBRARY_PATH=${linuxLDLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
                 export PKG_CONFIG_PATH=${linuxPkgConfigPath}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+                export LIBGL_ALWAYS_SOFTWARE=1
+                export WGPU_BACKEND=gl
+                export WGPU_POWER_PREF=low-power
+                export LIBGL_DRIVERS_PATH=${pkgs.mesa.drivers}/lib/dri
+                export MESA_GL_VERSION_OVERRIDE=3.3
+                export MESA_GLSL_VERSION_OVERRIDE=330
+                export WGPU_ALLOW_SLOW_BACKENDS=1
               '';
         };
 

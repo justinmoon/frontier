@@ -27,6 +27,7 @@ if [[ "$(uname -s)" == "Linux" && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}"
     # Give Xvfb a moment to start
     sleep 1
     printf 'Started Xvfb on DISPLAY=%s\n' "$DISPLAY"
+    run_step "Display environment" bash -lc 'env | grep -E "DISPLAY|WAYLAND" || true'
   else
     printf 'Xvfb not found and no display available; automation tests require a display\n' >&2
     exit 1
