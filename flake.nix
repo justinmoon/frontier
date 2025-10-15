@@ -38,15 +38,6 @@
         };
 
         # Common arguments for all crane builds
-        libxkbcommonWithX11 =
-          if pkgs.stdenv.isLinux then
-            pkgs.libxkbcommon.override {
-              withX11 = true;
-              withWayland = true;
-            }
-          else
-            pkgs.libxkbcommon;
-
         commonArgs = {
           inherit src;
           pname = "frontier";
@@ -64,7 +55,7 @@
             apple-sdk
             libiconv
           ] ++ pkgs.lib.optionals stdenv.isLinux [
-            libxkbcommonWithX11
+            libxkbcommon
             wayland
             xorg.libX11
             xorg.libXcursor
@@ -144,24 +135,44 @@
               xorg.xvfb
             ];
 
-          shellHook = ''
-            export RUST_BACKTRACE=1
+          shellHook =
+            let
+              linuxLDLibraryPath = pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon
+                pkgs.xorg.libX11
+                pkgs.xorg.libXcursor
+                pkgs.xorg.libXi
+                pkgs.xorg.libXrandr
+                pkgs.xorg.libxcb
+              ];
+              linuxPkgConfigPath = pkgs.lib.makeSearchPath "lib/pkgconfig" [
+                pkgs.libxkbcommon
+                pkgs.xorg.libX11
+                pkgs.xorg.libxcb
+              ];
+            in
+              ''
+                export RUST_BACKTRACE=1
 
-            # Install git hooks
-            if [ -f scripts/hooks/post-checkout ]; then
-              mkdir -p .git/hooks
-              cp scripts/hooks/post-checkout .git/hooks/post-checkout
-              chmod +x .git/hooks/post-checkout
-              echo "Git hooks installed"
-            fi
+                # Install git hooks
+                if [ -f scripts/hooks/post-checkout ]; then
+                  mkdir -p .git/hooks
+                  cp scripts/hooks/post-checkout .git/hooks/post-checkout
+                  chmod +x .git/hooks/post-checkout
+                  echo "Git hooks installed"
+                fi
 
-            if command -v just >/dev/null 2>&1; then
-              echo "Available just recipes:"
-              just --list
-            else
-              echo "Install 'just' to list available recipes."
-            fi
-          '';
+                if command -v just >/dev/null 2>&1; then
+                  echo "Available just recipes:"
+                  just --list
+                else
+                  echo "Install 'just' to list available recipes."
+                fi
+              ''
+              + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export LD_LIBRARY_PATH=${linuxLDLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+                export PKG_CONFIG_PATH=${linuxPkgConfigPath}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+              '';
         };
 
         # App for `nix run`
