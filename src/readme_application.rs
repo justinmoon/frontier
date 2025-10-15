@@ -24,6 +24,7 @@ use blitz_dom::{local_name, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
+use blitz_traits::events::{BlitzInputEvent, DomEvent, DomEventData};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html_escape::encode_text;
 use keyboard_types::Modifiers;
@@ -505,9 +506,12 @@ impl ReadmeApplication {
             }
             AutomationCommand::TypeText { selector, text } => {
                 self.automation_focus_selector(event_loop, &selector)?;
+                self.automation_set_input_value(&selector, &text)?;
+
                 let window_id = self
                     .automation_first_window_id()
                     .ok_or_else(|| anyhow!("automation window not ready"))?;
+
                 self.current_input = text.clone();
                 for ch in text.chars() {
                     let mut buffer = [0u8; 4];
@@ -842,6 +846,43 @@ impl ReadmeApplication {
                 return Ok(());
             }
         }
+        Ok(())
+    }
+
+    fn automation_set_input_value(
+        &mut self,
+        selector: &ElementSelector,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let (window_id, node_id) = self.automation_node_for_selector(selector)?;
+        let value_json = serde_json::to_string(value)?;
+
+        if let Some(runtime) = self.current_js_runtime.as_ref() {
+            if let Ok(script) = Self::selector_script(
+                selector,
+                &format!(
+                    "try {{\n                        element.value = {value_json};\n                        element.setAttribute('value', {value_json});\n                        return true;\n                    }} catch (err) {{\n                        return false;\n                    }}",
+                    value_json = value_json
+                ),
+            ) {
+                let _ = runtime
+                    .environment()
+                    .eval_with::<bool>(&script, "automation-set-input.js");
+            }
+
+            if let Some(window) = self.inner.windows.get_mut(&window_id) {
+                let chain = window.doc.node_chain(node_id);
+                let event = DomEvent::new(
+                    node_id,
+                    DomEventData::Input(BlitzInputEvent {
+                        value: value.to_string(),
+                    }),
+                );
+                let _ = runtime.environment().dispatch_dom_event(&event, &chain);
+            }
+        }
+
+        self.automation_pump_for(Duration::from_millis(16));
         Ok(())
     }
 

@@ -16,7 +16,7 @@ Frontier’s automation story now revolves around the full chrome process instea
 
 4. **Test Coverage & Migration**
    - Added `tests/automation_interaction.rs` plus a regression harness for the chrome back button bug that reproduce issues against the full browser.
-   - Existing WebDriver/headless tests remain for QuickJS-level confidence while we finish the migration.
+   - Retired the legacy WebDriver integration suite in favour of `automation_client`, so CI exercises the browser exclusively through the new host.
 
 5. **Wait & Synchronisation Primitives**
    - Client exposes `wait_for_text`, `wait_for_element`, timed pump helpers, and selector-based existence checks.
@@ -35,7 +35,7 @@ Frontier’s automation story now revolves around the full chrome process instea
    - Convert artifacts into structured bundles that CI can upload automatically.
 
 3. **Suite Migration**
-   - Port the remaining headless/WebDriver integration tests to `automation_client` and delete direct QuickJS harness usage once coverage is equivalent.
+   - Audit the remaining QuickJS-only regression tests and decide which need host-backed coverage versus documented exceptions.
    - Backfill end-to-end tests for navigation history, chrome controls, and relay/Nostr flows uncovered during triage.
 
 4. **Higher-Level Waits**
