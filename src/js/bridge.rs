@@ -14,10 +14,12 @@ pub struct BlitzJsBridge {
     document: NonNull<BaseDocument>,
     id_index: HashMap<String, usize>,
     comment_payloads: HashMap<usize, String>,
+    generation: u64,
+    document_addr: usize,
 }
 
 impl BlitzJsBridge {
-    pub fn new(document: &mut BaseDocument) -> Self {
+    pub fn new(document: &mut BaseDocument, generation: u64) -> Self {
         let pointer = NonNull::new(document as *mut BaseDocument).expect("document pointer");
         let mut id_index = HashMap::new();
         Self::reindex_internal(document, &mut id_index);
@@ -27,6 +29,30 @@ impl BlitzJsBridge {
             document: pointer,
             id_index,
             comment_payloads: HashMap::new(),
+            generation,
+            document_addr: pointer.as_ptr() as usize,
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn ensure_attached(&self, expected_generation: u64, expected_addr: usize) {
+        if self.generation != expected_generation {
+            panic!(
+                "DOM bridge stale: expected generation {expected_generation}, bridge generation {}",
+                self.generation
+            );
+        }
+        let pointer_addr = self.document.as_ptr() as usize;
+        if pointer_addr != expected_addr || self.document_addr != expected_addr {
+            panic!(
+                "DOM bridge pointer mismatch: expected {:p}, bridge stored {:p}/{:p}",
+                expected_addr as *const BaseDocument,
+                pointer_addr as *const BaseDocument,
+                self.document_addr as *const BaseDocument
+            );
         }
     }
 

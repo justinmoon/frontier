@@ -69,6 +69,8 @@ pub struct DomState {
     mutations: Vec<DomPatch>,
     bridge: Option<BlitzJsBridge>,
     event_listener_counts: HashMap<String, usize>,
+    document_generation: u64,
+    document_addr: Option<usize>,
 }
 
 impl DomState {
@@ -78,17 +80,17 @@ impl DomState {
             mutations: Vec::new(),
             bridge: None,
             event_listener_counts: HashMap::new(),
+            document_generation: 0,
+            document_addr: None,
         }
     }
 
     pub fn attach_document(&mut self, document: &mut BaseDocument) {
-        if self.bridge.is_none() {
-            self.bridge = Some(BlitzJsBridge::new(document));
-        }
+        self.install_bridge(document, false);
     }
 
     pub fn reattach_document(&mut self, document: &mut BaseDocument) {
-        self.bridge = Some(BlitzJsBridge::new(document));
+        self.install_bridge(document, true);
     }
 
     pub fn listen(&mut self, event_type: &str) {
@@ -113,15 +115,29 @@ impl DomState {
     }
 
     fn bridge_mut(&mut self) -> Result<&mut BlitzJsBridge> {
-        self.bridge
+        let generation = self.document_generation;
+        let bridge = self
+            .bridge
             .as_mut()
-            .ok_or_else(|| anyhow!("DOM bridge not attached"))
+            .ok_or_else(|| anyhow!("DOM bridge not attached"))?;
+        let addr = self
+            .document_addr
+            .expect("DOM bridge document address missing");
+        bridge.ensure_attached(generation, addr);
+        Ok(bridge)
     }
 
     fn bridge_ref(&self) -> Result<&BlitzJsBridge> {
-        self.bridge
+        let generation = self.document_generation;
+        let bridge = self
+            .bridge
             .as_ref()
-            .ok_or_else(|| anyhow!("DOM bridge not attached"))
+            .ok_or_else(|| anyhow!("DOM bridge not attached"))?;
+        let addr = self
+            .document_addr
+            .expect("DOM bridge document address missing");
+        bridge.ensure_attached(generation, addr);
+        Ok(bridge)
     }
 
     fn record_mutation(&mut self, patch: DomPatch) {
@@ -129,7 +145,7 @@ impl DomState {
     }
 
     pub fn handle_from_element_id(&mut self, id: &str) -> Option<String> {
-        let bridge = self.bridge.as_mut()?;
+        let bridge = self.bridge_mut().ok()?;
         bridge.find_node_by_html_id(id).map(format_handle)
     }
 
@@ -166,13 +182,13 @@ impl DomState {
     }
 
     pub fn text_content(&self, handle: &str) -> Option<String> {
-        let bridge = self.bridge.as_ref()?;
+        let bridge = self.bridge_ref().ok()?;
         let node_id = parse_handle(handle).ok()?;
         bridge.text_content(node_id)
     }
 
     pub fn inner_html(&self, handle: &str) -> Option<String> {
-        let bridge = self.bridge.as_ref()?;
+        let bridge = self.bridge_ref().ok()?;
         let node_id = parse_handle(handle).ok()?;
         bridge.inner_html(node_id).ok()
     }
@@ -411,7 +427,8 @@ impl DomState {
     }
 
     pub fn to_html(&self) -> Result<String> {
-        if let Some(bridge) = self.bridge.as_ref() {
+        if let (Some(bridge), Some(addr)) = (self.bridge.as_ref(), self.document_addr) {
+            bridge.ensure_attached(self.document_generation, addr);
             bridge.serialize_document()
         } else {
             Ok(self.initial_html.clone())
@@ -437,4 +454,33 @@ fn normalize_event_name(name: &str) -> String {
     let trimmed = name.trim();
     let without_on = trimmed.strip_prefix("on").unwrap_or(trimmed);
     without_on.to_ascii_lowercase()
+}
+
+impl DomState {
+    fn install_bridge(&mut self, document: &mut BaseDocument, force: bool) {
+        let addr = document as *mut BaseDocument as usize;
+        if !force {
+            if let (Some(existing_addr), Some(existing_bridge)) =
+                (self.document_addr, self.bridge.as_ref())
+            {
+                if existing_addr == addr && existing_bridge.generation() == self.document_generation
+                {
+                    return;
+                }
+            }
+        }
+
+        let generation = self.bump_generation();
+        self.bridge = Some(BlitzJsBridge::new(document, generation));
+        self.document_addr = Some(addr);
+    }
+
+    fn bump_generation(&mut self) -> u64 {
+        let mut next = self.document_generation.wrapping_add(1);
+        if next == 0 {
+            next = 1;
+        }
+        self.document_generation = next;
+        next
+    }
 }
